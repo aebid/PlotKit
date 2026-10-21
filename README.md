@@ -84,6 +84,24 @@ ROOT colour names, `TLatex` markup, font codes and draw options are translated t
 matplotlib automatically (`PlotKit/rootcompat.py`); when ROOT is importable it is used as the
 authoritative colour source.
 
+### Optional style settings
+
+All opt-in: a configuration that sets none of them plots as before. They are read by the
+default (mplhep) backend; the cmsstyle backend ignores them.
+
+| Setting (`cms_stacked.yaml`) | Effect |
+|---|---|
+| `page_setup.label_lines: [[ana_text], [ch_text, cat_text], [customreg_text]]` | The labels top left, one line per entry: the boxes of an entry share a line (joined with `, `), in the `text_size` and `font` of its first box (ROOT 6x = bold, also inside math). Without it every box is a line of its own, in the legend's size. |
+| `legend.n_columns: 2` | Legend columns. |
+| `sgn_hist.show_yield: false` | Drop the `(yield N)` of each signal's legend entry (default `true`). |
+| `sgn_hist.norm_legend_note: "..."` | With `bkg` signal scaling, say it once, as a text-only legend entry, instead of `(norm. to bkg)` on every signal. |
+| `page_setup.y_headroom: 0.4`, `page_setup.log_y_headroom: 0.45` | The fraction of the y axis (linear / log) kept free above the highest bin, for the legend and labels, instead of `max_y_sf`. Also per variable in `histograms.yaml`. |
+| `page_setup.cms_label_fontsize: 20` | Font size of the CMS / scope / lumi line. |
+
+The CMS label line is drawn with the scope (`scope_text`, e.g. `Preliminary`) passed as
+`text=` -- mplhep 1.x ignores the former `label=`, which dropped it -- and "CMS", the scope
+and the lumi share one baseline.
+
 ## Architecture / extension points
 
 ```
