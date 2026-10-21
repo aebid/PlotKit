@@ -322,6 +322,27 @@ def test_headroom_keeps_a_fraction_of_the_axis_free():
     assert _y_max(legacy, 100.0) == pytest.approx(150.0)
 
 
+def test_the_cms_label_line_shares_one_baseline():
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import mplhep as hep
+
+    from PlotKit.backends import MplhepBackend
+    from PlotKit.spec import StackSpec
+
+    fig, ax = plt.subplots()
+    MplhepBackend()._cms_label(
+        hep, ax, StackSpec(scope_text="Preliminary", lumi_text="1 fb^{-1}")
+    )
+    line = [t for t in ax.texts if t.get_text()]
+    assert len(line) >= 2
+    assert {t.get_verticalalignment() for t in line} == {"baseline"}
+    assert all(t.get_transform() == line[0].get_transform() for t in line)
+    plt.close(fig)
+
+
 def test_a_bold_label_is_bold_inside_its_math_too():
     from PlotKit.backends import _bold_mathtext
 

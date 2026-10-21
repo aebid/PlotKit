@@ -34,6 +34,35 @@ def _y_max(spec, y_max: float) -> float:
     return spec.y_min + (y_max - spec.y_min) / (1.0 - headroom)
 
 
+def _align_cms_label(ax) -> None:
+    """Put the CMS label line -- "CMS", the scope and the lumi -- on one baseline.
+
+    mplhep places "CMS" and the lumi by the bottom of their text box but the scope
+    ("Preliminary") by its baseline, so the scope sits lower than "CMS". All three go on the
+    baseline here, raised a quarter of the largest font so descenders clear the frame.
+    """
+    import matplotlib.transforms as mtransforms
+
+    texts = [
+        t
+        for t in ax.texts
+        if t.get_text()
+        and t.get_transform() == ax.transAxes
+        and t.get_position()[1] == 1.0
+    ]
+    if not texts:
+        return
+    raised = mtransforms.offset_copy(
+        ax.transAxes,
+        fig=ax.figure,
+        y=0.25 * max(t.get_fontsize() for t in texts),
+        units="points",
+    )
+    for t in texts:
+        t.set_verticalalignment("baseline")
+        t.set_transform(raised)
+
+
 def _log_y_max(spec, y_max: float) -> float:
     """Top of a log y axis: log_y_headroom of its height free above y_max, else max_y_sf."""
     headroom = spec.log_y_headroom
@@ -182,6 +211,7 @@ class MplhepBackend(StyleBackend):
                     loc=0,
                     **size,
                 )
+            _align_cms_label(ax)
         except TypeError:
             # Older mplhep without rlabel: draw CMS text + manual lumi.
             hep.cms.text(spec.scope_text or "", ax=ax)
