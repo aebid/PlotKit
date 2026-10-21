@@ -110,15 +110,23 @@ class StackedPlotter(BasePlotter):
             if divide:
                 bkg_total_unc = bkg_total_unc.divided_by_width()
 
+        # sgn_hist options: show_yield (default true) adds each signal's yield to its label;
+        # norm_legend_note, with "bkg" scaling, says it once as a legend entry instead of
+        # "(norm. to bkg)" on every signal
+        show_yield = bool(sgn_style.get("show_yield", True))
+        norm_note = sgn_style.get("norm_legend_note") if norm_to_bkg else None
         for H, raw_integral, plot_name, color in raw_signals:
             if norm_to_bkg:
                 # Scale each signal so its integral equals the summed-background integral.
                 factor = (bkg_raw_integral / raw_integral) if raw_integral else 1.0
-                label = self._bkg_norm_label(plot_name)
-                label = label + f" (yield {raw_integral:.2f})"
+                if norm_note:
+                    label = self._SCALE_SUFFIX_RE.sub("", plot_name).rstrip()
+                else:
+                    label = self._bkg_norm_label(plot_name)
             else:
                 factor = self._signal_scale(scale, H.name)
                 label = plot_name
+            if show_yield:
                 label = label + f" (yield {raw_integral:.2f})"
             if factor != 1.0:
                 H = H.scaled(factor)
@@ -165,6 +173,14 @@ class StackedPlotter(BasePlotter):
             y_min=float(page.get("y_min", 0.0)),
             y_min_log=float(page.get("y_min_log", 1e-2)),
             max_y_sf=max_y_sf,
+            log_y_headroom=self._float_or_none(
+                hd.get("log_y_headroom", page.get("log_y_headroom"))
+            ),
+            y_headroom=self._float_or_none(
+                hd.get("y_headroom", page.get("y_headroom"))
+            ),
+            cms_label_fontsize=self._float_or_none(page.get("cms_label_fontsize")),
+            legend_note=(norm_note or "") if signals else "",
             draw_ratio=draw_ratio,
             ratio_title=ratio_title,
             ratio_min=max(0.0, 2.0 - max_ratio),
@@ -255,14 +271,30 @@ class StackedPlotter(BasePlotter):
         cms_text = cfg.text_box("cms_text").get("text", "CMS")
         lumi = cfg.text_box("lumi_text").get("text", "")
 
-        ana = cfg.text_box("ana_text").get("text", "")
-        extra_sources = [
-            ana,
-            custom.get("ch_text", ""),
-            custom.get("cat_text", ""),
-            custom.get("customreg_text", ""),
-        ]
-        extra = [t for t in extra_sources if t]
+        label_lines = cfg.page_setup.get("label_lines")
+        styles = []
+        if label_lines:
+            # One label per line of text boxes, in the size and weight of the first box
+            extra = []
+            for boxes in label_lines:
+                texts = [self._box_text(cfg, custom, box) for box in boxes]
+                texts = [t for t in texts if t]
+                if not texts:
+                    continue
+                first = cfg.text_box(boxes[0])
+                extra.append(", ".join(texts))
+                styles.append(
+                    {
+                        "fontsize": self._text_size_pt(first.get("text_size")),
+                        "bold": self._is_bold(first.get("font")),
+                    }
+                )
+        else:
+            extra_sources = [
+                self._box_text(cfg, custom, box)
+                for box in ("ana_text", "ch_text", "cat_text", "customreg_text")
+            ]
+            extra = [t for t in extra_sources if t]
 
         legend = cfg.legend_cfg
         return {
@@ -270,9 +302,40 @@ class StackedPlotter(BasePlotter):
             "scope_text": scope,
             "lumi_text": lumi,
             "extra_labels": extra,
+            "extra_label_styles": styles,
             "legend_loc": "upper right",
             "legend_fontsize": self._legend_fontsize(legend),
+            "legend_ncol": int(legend.get("n_columns", 1)),
         }
+
+    @staticmethod
+    def _float_or_none(value) -> Optional[float]:
+        try:
+            return None if value is None else float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _box_text(cfg, custom, box) -> str:
+        """A text box's text: the per-plot override, else the configured text."""
+        return custom.get(box) or cfg.text_box(box).get("text", "")
+
+    @staticmethod
+    def _text_size_pt(text_size) -> Optional[float]:
+        # Legacy text_size is a ROOT NDC fraction; the same mapping as the legend's.
+        try:
+            return max(8.0, min(30.0, float(text_size) * 600.0))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _is_bold(font) -> bool:
+        # ROOT font code: precision in the last digit, the font before it; 2, 3, 6, 7, 10
+        # and 11 are the bold ones (62 = Helvetica bold).
+        try:
+            return int(font) // 10 in (2, 3, 6, 7, 10, 11)
+        except (TypeError, ValueError):
+            return False
 
     @staticmethod
     def _legend_fontsize(legend) -> Optional[float]:

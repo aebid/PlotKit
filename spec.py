@@ -76,6 +76,11 @@ class StackSpec:
     y_min: float = 0.0
     y_min_log: float = 1e-2
     max_y_sf: float = 1.5
+    # Log y: the fraction of the axis height kept free above the highest bin (for the legend
+    # and labels), instead of max_y_sf. None: max_y_sf.
+    log_y_headroom: Optional[float] = None
+    # The same for a linear y axis. None: max_y_sf.
+    y_headroom: Optional[float] = None
 
     # ratio panel
     draw_ratio: bool = True
@@ -88,9 +93,16 @@ class StackSpec:
     scope_text: str = "Preliminary"
     is_data: bool = True
     lumi_text: str = ""
+    # Font size of the CMS label line (CMS, scope and lumi). None: the style's.
+    cms_label_fontsize: Optional[float] = None
     extra_labels: List[str] = dataclasses.field(default_factory=list)
+    # Per extra label: {"fontsize": pt, "bold": bool}. Empty: every label in the legend's size.
+    extra_label_styles: List[dict] = dataclasses.field(default_factory=list)
 
     # legend / canvas
     legend_loc: str = "upper right"
     legend_fontsize: Optional[float] = None
+    legend_ncol: int = 1
+    # A text-only legend entry after the others, e.g. how the signals are normalised.
+    legend_note: str = ""
     canvas_size: Tuple[float, float] = (10.0, 10.0)

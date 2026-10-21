@@ -233,3 +233,100 @@ def test_cmsstyle_backend_optional(tmp_path):
         scale=10.0,
     )
     assert out.exists() and out.stat().st_size > 0
+
+
+LABEL_LINES_CFG = dict(
+    PAGE_CFG,
+    page_setup=dict(
+        PAGE_CFG["page_setup"],
+        label_lines=[["ana_text"], ["ch_text", "cat_text"], ["customreg_text"]],
+    ),
+    ana_text={"text": "demo", "text_size": 0.03, "font": 62},
+    ch_text={"text_size": 0.03, "font": 62},
+    customreg_text={"text_size": 0.025, "font": 42},
+)
+CUSTOM_TEXTS = {
+    "ch_text": "#mu#mu",
+    "cat_text": "res2b",
+    "customreg_text": "Signal Region",
+}
+
+
+def _labels(page_cfg):
+    from PlotKit.config import PlotConfig
+    from PlotKit.plotters.stacked import StackedPlotter
+
+    plotter = StackedPlotter(PlotConfig(page_cfg, hist_cfg=HIST_CFG), "mplhep")
+    return plotter._labels(plotter.config, CUSTOM_TEXTS, True)
+
+
+def test_label_lines_join_boxes_in_the_style_of_the_first():
+    labels = _labels(LABEL_LINES_CFG)
+    assert labels["extra_labels"] == ["demo", "#mu#mu, res2b", "Signal Region"]
+    styles = labels["extra_label_styles"]
+    assert [s["bold"] for s in styles] == [True, True, False]
+    assert [s["fontsize"] for s in styles] == [18.0, 18.0, 15.0]
+
+
+def test_without_label_lines_each_box_is_a_label_in_the_legend_size():
+    labels = _labels(PAGE_CFG)
+    assert labels["extra_labels"] == ["demo", "#mu#mu", "res2b", "Signal Region"]
+    assert labels["extra_label_styles"] == []
+
+
+def test_stacked_render_with_label_lines(tmp_path):
+    out = tmp_path / "v_lines.pdf"
+    Plotter(LABEL_LINES_CFG, hist_cfg=HIST_CFG).plot(
+        "v", _synthetic(), str(out), want_data=True, custom=dict(CUSTOM_TEXTS)
+    )
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_signal_label_options_and_legend_columns():
+    from PlotKit.config import PlotConfig
+    from PlotKit.plotters.stacked import StackedPlotter
+
+    page = dict(
+        PAGE_CFG,
+        legend={"text_size": 0.03, "n_columns": 2},
+        sgn_hist=dict(
+            PAGE_CFG["sgn_hist"], show_yield=False, norm_legend_note="norm. to bkg"
+        ),
+    )
+    spec = StackedPlotter(PlotConfig(page, hist_cfg=HIST_CFG), None).build_spec(
+        "v", _synthetic(), True, {}, "bkg"
+    )
+    # no yield and no per-signal note: the note is one legend entry
+    assert spec.signals[0].label == "HH"
+    assert spec.legend_note == "norm. to bkg"
+    assert spec.legend_ncol == 2
+
+    # the defaults keep both on every signal
+    spec = StackedPlotter(PlotConfig(PAGE_CFG, hist_cfg=HIST_CFG), None).build_spec(
+        "v", _synthetic(), True, {}, "bkg"
+    )
+    assert spec.signals[0].label.startswith("HH (norm. to bkg) (yield ")
+    assert spec.legend_note == "" and spec.legend_ncol == 1
+
+
+def test_headroom_keeps_a_fraction_of_the_axis_free():
+    from PlotKit.backends import _log_y_max, _y_max
+    from PlotKit.spec import StackSpec
+
+    spec = StackSpec(y_min=0.0, y_min_log=1e-2, y_headroom=0.5, log_y_headroom=0.5)
+    assert _y_max(spec, 100.0) == pytest.approx(200.0)
+    # log: 1e-2 .. 1e2 is 4 decades, so the top is 4 more decades up
+    assert _log_y_max(spec, 1e2) == pytest.approx(1e6)
+    # unset: max_y_sf as before
+    legacy = StackSpec(max_y_sf=1.5)
+    assert _y_max(legacy, 100.0) == pytest.approx(150.0)
+
+
+def test_a_bold_label_is_bold_inside_its_math_too():
+    from PlotKit.backends import _bold_mathtext
+
+    assert (
+        _bold_mathtext(r"$\mathrm{hh}\rightarrow\mathrm{bbWW}$")
+        == r"$\mathbf{\mathbf{hh}\rightarrow\mathbf{bbWW}}$"
+    )
+    assert _bold_mathtext("Signal Region") == "Signal Region"

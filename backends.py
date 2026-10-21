@@ -26,6 +26,30 @@ from .spec import StackSpec
 _t = rc.tlatex_to_mpl
 
 
+def _y_max(spec, y_max: float) -> float:
+    """Top of a linear y axis: y_headroom of its height free above y_max, else max_y_sf."""
+    headroom = spec.y_headroom
+    if headroom is None or not 0 < headroom < 1:
+        return y_max * spec.max_y_sf
+    return spec.y_min + (y_max - spec.y_min) / (1.0 - headroom)
+
+
+def _log_y_max(spec, y_max: float) -> float:
+    """Top of a log y axis: log_y_headroom of its height free above y_max, else max_y_sf."""
+    headroom = spec.log_y_headroom
+    if headroom is None or not 0 < headroom < 1 or y_max <= spec.y_min_log:
+        return y_max * spec.max_y_sf
+    low, high = np.log10(spec.y_min_log), np.log10(y_max)
+    return float(10 ** (low + (high - low) / (1.0 - headroom)))
+
+
+def _bold_mathtext(text: str) -> str:
+    """A converted label made bold inside its math too: mathtext ignores fontweight."""
+    if len(text) > 1 and text.startswith("$") and text.endswith("$"):
+        return r"$\mathbf{" + text[1:-1].replace(r"\mathrm{", r"\mathbf{") + "}$"
+    return text
+
+
 def _want_ratio(spec) -> bool:
     """A ratio panel needs a stack plus something to show in it: data points, or -- when the
     full (stat + syst) uncertainty was computed -- the relative uncertainty band alone.
@@ -137,14 +161,27 @@ class MplhepBackend(StyleBackend):
         )
 
     def _cms_label(self, hep, ax, spec):
+        size = {"fontsize": spec.cms_label_fontsize} if spec.cms_label_fontsize else {}
         try:
-            hep.cms.label(
-                ax=ax,
-                data=spec.is_data,
-                label=spec.scope_text,
-                rlabel=_t(spec.lumi_text),
-                loc=0,
-            )
+            try:
+                # mplhep >= 1 takes the scope ("Preliminary") as text= and ignores label=
+                hep.cms.label(
+                    ax=ax,
+                    data=spec.is_data,
+                    text=spec.scope_text,
+                    rlabel=_t(spec.lumi_text),
+                    loc=0,
+                    **size,
+                )
+            except TypeError:
+                hep.cms.label(
+                    ax=ax,
+                    data=spec.is_data,
+                    label=spec.scope_text,
+                    rlabel=_t(spec.lumi_text),
+                    loc=0,
+                    **size,
+                )
         except TypeError:
             # Older mplhep without rlabel: draw CMS text + manual lumi.
             hep.cms.text(spec.scope_text or "", ax=ax)
@@ -236,23 +273,45 @@ class MplhepBackend(StyleBackend):
             ax.set_xscale("log")
         if spec.log_y:
             ax.set_yscale("log")
-            ax.set_ylim(spec.y_min_log, max(ymax_candidates) * spec.max_y_sf)
+            ax.set_ylim(spec.y_min_log, _log_y_max(spec, max(ymax_candidates)))
         else:
-            ax.set_ylim(spec.y_min, max(ymax_candidates) * spec.max_y_sf)
+            ax.set_ylim(spec.y_min, _y_max(spec, max(ymax_candidates)))
 
         # CMS + auxiliary labels
         self._cms_label(hep, ax, spec)
+        y = 0.92
         for i, lab in enumerate(spec.extra_labels):
+            style = (
+                spec.extra_label_styles[i] if i < len(spec.extra_label_styles) else {}
+            )
+            size = style.get("fontsize") or spec.legend_fontsize or 16
+            text = _bold_mathtext(_t(lab)) if style.get("bold") else _t(lab)
             ax.text(
                 0.05,
-                0.92 - 0.06 * i,
-                _t(lab),
+                y,
+                text,
                 transform=ax.transAxes,
                 ha="left",
                 va="top",
-                fontsize=spec.legend_fontsize or 16,
+                fontsize=size,
+                fontweight="bold" if style.get("bold") else "normal",
             )
-        ax.legend(loc=spec.legend_loc, frameon=False, fontsize=spec.legend_fontsize)
+            # a line per label, further apart for a label larger than 16 pt
+            y -= 0.06 * max(1.0, size / 16.0) if style else 0.06
+        handles, labels = ax.get_legend_handles_labels()
+        if spec.legend_note:
+            from matplotlib.lines import Line2D
+
+            handles.append(Line2D([], [], linestyle="none"))
+            labels.append(_t(spec.legend_note))
+        ax.legend(
+            handles,
+            labels,
+            loc=spec.legend_loc,
+            frameon=False,
+            fontsize=spec.legend_fontsize,
+            ncol=spec.legend_ncol,
+        )
 
         # ratio panel
         if rax is not None:
