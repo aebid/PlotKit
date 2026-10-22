@@ -353,6 +353,35 @@ def test_a_bold_label_is_bold_inside_its_math_too():
     assert _bold_mathtext("Signal Region") == "Signal Region"
 
 
+def test_each_math_segment_of_a_bold_label_is_bolded_and_it_renders(tmp_path):
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from PlotKit.backends import _bold_mathtext
+
+    # two native-mathtext boxes joined on one label line
+    bold = _bold_mathtext(r"$\mu\mu$, $m_{jj} > 400$")
+    assert bold == r"$\mathbf{\mu\mu}$, $\mathbf{m_{jj} > 400}$"
+    fig, ax = plt.subplots()
+    ax.text(0.1, 0.5, bold, fontweight="bold")
+    fig.savefig(
+        tmp_path / "bold.png"
+    )  # raised "Expected '}'" when bolded as one segment
+    plt.close(fig)
+    # an escaped \$ is text, not a segment
+    assert _bold_mathtext(r"cost \$5") == r"cost \$5"
+
+
+def test_a_bold_label_that_would_not_parse_stays_unbolded(monkeypatch):
+    from PlotKit import rootcompat as rc
+    from PlotKit.backends import _bold_mathtext
+
+    monkeypatch.setattr(rc, "_mathtext_parses", lambda s: False)
+    assert _bold_mathtext(r"$\mu\mu$") == r"$\mu\mu$"
+
+
 @pytest.mark.parametrize(
     "page_update, key",
     [

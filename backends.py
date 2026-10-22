@@ -117,11 +117,22 @@ def _log_y_max(spec, y_max: float) -> float:
     return float(10 ** (low + (high - low) / (1.0 - headroom)))
 
 
+# A $...$ math segment of a converted label; an escaped \$ is literal text, not a delimiter.
+_MATH_SEGMENT = re.compile(r"(?<!\\)\$(.+?)(?<!\\)\$")
+
+
 def _bold_mathtext(text: str) -> str:
-    """A converted label made bold inside its math too: mathtext ignores fontweight."""
-    if len(text) > 1 and text.startswith("$") and text.endswith("$"):
-        return r"$\mathbf{" + text[1:-1].replace(r"\mathrm{", r"\mathbf{") + "}$"
-    return text
+    """A converted label made bold inside its math too: mathtext ignores fontweight.
+
+    Each $...$ segment is bolded on its own -- a label joined from several boxes can hold
+    more than one. If the result does not parse, the label is returned unbolded (its plain
+    text is still drawn in the bold weight), so bolding can never abort a plot.
+    """
+    bold = _MATH_SEGMENT.sub(
+        lambda m: r"$\mathbf{" + m.group(1).replace(r"\mathrm{", r"\mathbf{") + "}$",
+        text,
+    )
+    return bold if bold == text or rc._mathtext_parses(bold) else text
 
 
 def _want_ratio(spec) -> bool:
