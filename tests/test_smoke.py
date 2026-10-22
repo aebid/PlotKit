@@ -409,6 +409,69 @@ def test_the_cms_label_draws_the_scope(is_data, scope_line):
     plt.close(fig)
 
 
+def _cms_line(scope, is_data, lumi="109.9 fb^{-1} (13.6 TeV)"):
+    """Draw the CMS line as render_stacked does (CMS style, 10x10 canvas); return the figure,
+    its texts by content and the style's default font size."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import mplhep as hep
+
+    from PlotKit.backends import MplhepBackend
+    from PlotKit.spec import StackSpec
+
+    with plt.style.context(hep.style.CMS):
+        fig, ax = plt.subplots(figsize=(10, 10))
+        spec = StackSpec(scope_text=scope, lumi_text=lumi, is_data=is_data)
+        MplhepBackend()._cms_label(hep, ax, spec)
+        default = float(matplotlib.rcParams["font.size"])
+    by_text = {t.get_text(): t for t in ax.texts if t.get_text()}
+    return fig, by_text, default
+
+
+def test_a_cms_line_that_fits_keeps_mplhep_sizes():
+    import matplotlib.pyplot as plt
+
+    fig, by_text, default = _cms_line("Preliminary", True)
+    assert by_text["Preliminary"].get_fontsize() == default
+    plt.close(fig)
+
+
+def test_a_cms_line_that_would_hit_the_lumi_is_shrunk_to_fit():
+    import matplotlib.pyplot as plt
+
+    from PlotKit.backends import _CMS_LABEL_MIN_SCALE
+
+    # H_mumu without data: "CMS Simulation Private work" ran 22-58 px into the lumi
+    fig, by_text, default = _cms_line("Private work", False)
+    size = by_text["Simulation Private work"].get_fontsize()
+    assert _CMS_LABEL_MIN_SCALE * default <= size < default
+    renderer = fig.canvas.get_renderer()
+    left = max(
+        by_text[t].get_window_extent(renderer).x1
+        for t in ("CMS", "Simulation Private work")
+    )
+    lumi = next(t for k, t in by_text.items() if "fb" in k)
+    assert left < lumi.get_window_extent(renderer).x0
+    # still one baseline, in one transform
+    assert {t.get_verticalalignment() for t in by_text.values()} == {"baseline"}
+    plt.close(fig)
+
+
+def test_a_cms_line_too_long_to_fit_stops_at_the_floor_and_warns():
+    import matplotlib.pyplot as plt
+
+    from PlotKit.backends import _CMS_LABEL_MIN_SCALE
+
+    scope = "Private work " * 6
+    with pytest.warns(UserWarning, match="overlaps the lumi"):
+        fig, by_text, default = _cms_line(scope, True)
+    size = by_text[" ".join(scope.split())].get_fontsize()
+    assert size == pytest.approx(_CMS_LABEL_MIN_SCALE * default)
+    plt.close(fig)
+
+
 NOTE_CFG = dict(
     LABEL_LINES_CFG,
     legend={"text_size": 0.03, "n_columns": 2},

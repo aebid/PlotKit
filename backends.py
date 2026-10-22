@@ -53,22 +53,18 @@ def _scope_line(spec) -> str:
     return " ".join(scope.split())
 
 
-def _align_cms_label(ax) -> None:
-    """Put the CMS label line -- "CMS", the scope and the lumi -- on one baseline.
+def _align_cms_label(ax, texts) -> None:
+    """Put the CMS label line -- "CMS", the scope and the lumi, the texts ``hep.cms.label``
+    returned -- on one baseline.
 
     mplhep places "CMS" and the lumi by the bottom of their text box but the scope
-    ("Preliminary") by its baseline, so the scope sits lower than "CMS". All three go on the
-    baseline here, raised a quarter of the largest font so descenders clear the frame.
+    ("Preliminary") by its baseline (and its y by the font's descent), so the scope sits lower
+    than "CMS". All three go on the top edge of the axes and on the baseline here, raised a
+    quarter of the largest font so descenders clear the frame.
     """
     import matplotlib.transforms as mtransforms
 
-    texts = [
-        t
-        for t in ax.texts
-        if t.get_text()
-        and t.get_transform() == ax.transAxes
-        and t.get_position()[1] == 1.0
-    ]
+    texts = [t for t in texts if t is not None and t.get_text()]
     if not texts:
         return
     raised = mtransforms.offset_copy(
@@ -78,8 +74,37 @@ def _align_cms_label(ax) -> None:
         units="points",
     )
     for t in texts:
+        t.set_y(1.0)
         t.set_verticalalignment("baseline")
         t.set_transform(raised)
+
+
+# The CMS line is shrunk to fit beside the lumi down to this fraction of its size, no further.
+_CMS_LABEL_MIN_SCALE = 0.6
+
+
+def _cms_label_overlap(ax, cms, scope, lumi) -> float:
+    """By how many pixels "CMS <scope>" runs into the lumi, a small gap (half the scope's
+    font) included; <= 0 when the line fits."""
+    if lumi is None or not lumi.get_text():
+        return 0.0
+    renderer = ax.figure.canvas.get_renderer()
+    left = [t for t in (cms, scope) if t is not None and t.get_text()]
+    if not left:
+        return 0.0
+    right_edge = max(t.get_window_extent(renderer).x1 for t in left)
+    gap = renderer.points_to_pixels(0.5 * left[-1].get_fontsize())
+    return right_edge + gap - lumi.get_window_extent(renderer).x0
+
+
+def _cms_label_width(ax, texts) -> float:
+    """The width in pixels of the texts of the CMS line, the room they take together."""
+    renderer = ax.figure.canvas.get_renderer()
+    return sum(
+        t.get_window_extent(renderer).width
+        for t in texts
+        if t is not None and t.get_text()
+    )
 
 
 def _log_y_max(spec, y_max: float) -> float:
@@ -210,22 +235,54 @@ class MplhepBackend(StyleBackend):
         )
 
     def _cms_label(self, hep, ax, spec):
+        """The CMS line: "CMS <scope>" on the left of the axes top, the lumi on the right.
+
+        A line that would run into the lumi -- a long scope, or "Simulation" prepended without
+        data, in mplhep's default sizes -- is redrawn smaller until it fits, keeping mplhep's
+        proportions, down to _CMS_LABEL_MIN_SCALE of its size; below that it warns.
+        """
+        import matplotlib
+
         # mplhep >= 1.1.3 (the declared floor) takes the scope ("Preliminary") as text= and
         # ignores label=; it prepends "Simulation" itself when data is False.
-        size = (
-            {"fontsize": spec.cms_label_fontsize}
-            if spec.cms_label_fontsize is not None
-            else {}
+        def draw(size):
+            texts = hep.cms.label(
+                ax=ax,
+                data=spec.is_data,
+                text=spec.scope_text,
+                rlabel=_t(spec.lumi_text),
+                loc=0,
+                **({} if size is None else {"fontsize": size}),
+            )
+            _align_cms_label(ax, texts)
+            return texts
+
+        size = spec.cms_label_fontsize
+        texts = draw(size)
+        start = size if size is not None else float(matplotlib.rcParams["font.size"])
+        floor = _CMS_LABEL_MIN_SCALE * start
+        for _ in range(4):
+            overlap = _cms_label_overlap(ax, *texts[:3])
+            if overlap <= 0:
+                return
+            current = start if size is None else size
+            if current <= floor:
+                break
+            # every width scales with the font size: shrink by the part that does not fit
+            width = _cms_label_width(ax, texts[:3])
+            size = max(floor, current * (1.0 - overlap / width) * 0.98)
+            for t in texts:
+                if t is not None:
+                    t.remove()
+            texts = draw(size)
+        if _cms_label_overlap(ax, *texts[:3]) <= 0:
+            return
+        warnings.warn(
+            f"CMS label {_scope_line(spec)!r} overlaps the lumi text even at "
+            f"{_CMS_LABEL_MIN_SCALE:.0%} of its size; set a smaller "
+            "page_setup.cms_label_fontsize",
+            UserWarning,
         )
-        hep.cms.label(
-            ax=ax,
-            data=spec.is_data,
-            text=spec.scope_text,
-            rlabel=_t(spec.lumi_text),
-            loc=0,
-            **size,
-        )
-        _align_cms_label(ax)
 
     def render_stacked(self, spec: StackSpec, output_file: str) -> None:
         plt, hep, fig, ax, rax = self._new_figure(spec)

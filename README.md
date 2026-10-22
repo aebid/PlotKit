@@ -105,7 +105,9 @@ CMS guidelines set them, and warns that these are not applied.
 **The CMS label line, for every configuration:** the scope (`scope_text`, e.g. `Preliminary`)
 is now drawn -- it is passed as `text=`, while mplhep 1.x ignores the former `label=`, which
 dropped it -- as "Simulation <scope>" when no data is shown, in both backends. With mplhep,
-"CMS", the scope and the lumi share one baseline. This needs **mplhep >= 1.1.3** (declared in
+"CMS", the scope and the lumi share one baseline, and a line that would run into the lumi (a
+long scope, or "Simulation" added without data) is drawn smaller until it fits, down to 60% of
+its size; below that it warns to set a smaller `cms_label_fontsize`. This needs **mplhep >= 1.1.3** (declared in
 `pyproject.toml`); 1.1.0 fails on matplotlib 3.11 for any plot with a scope.
 
 ## Architecture / extension points
