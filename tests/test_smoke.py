@@ -404,6 +404,52 @@ def test_an_unreadable_style_value_raises_naming_its_key(page_update, key):
         plotter.build_spec("v", _synthetic(), True, dict(CUSTOM_TEXTS), None)
 
 
+@pytest.mark.parametrize(
+    "var, page, headroom, max_y_sf",
+    [
+        # nothing set: the page's max_y_sf default
+        ({}, {}, None, 1.5),
+        # the page's headroom beats the page's max_y_sf
+        ({}, {"y_headroom": 0.4, "max_y_sf": 3}, 0.4, 3.0),
+        # a variable's max_y_sf beats the page's headroom (e.g. --wantLogScale's 2000.2)
+        ({"max_y_sf": 100}, {"y_headroom": 0.4}, None, 100.0),
+        # a variable's headroom beats its own max_y_sf and the page's headroom
+        ({"y_headroom": 0.25, "max_y_sf": 100}, {"y_headroom": 0.4}, 0.25, 100.0),
+    ],
+)
+def test_a_variables_own_y_range_setting_beats_the_pages(var, page, headroom, max_y_sf):
+    from PlotKit.config import PlotConfig
+    from PlotKit.plotters.stacked import StackedPlotter
+
+    page_cfg = dict(PAGE_CFG, page_setup=dict(PAGE_CFG["page_setup"], **page))
+    hist_cfg = {"v": dict(HIST_CFG["v"], **var)}
+    spec = StackedPlotter(PlotConfig(page_cfg, hist_cfg=hist_cfg), None).build_spec(
+        "v", _synthetic(), True, {}, None
+    )
+    assert spec.y_headroom == headroom
+    assert spec.max_y_sf == max_y_sf
+
+
+def test_without_the_new_options_the_spec_is_as_before():
+    from PlotKit.config import PlotConfig
+    from PlotKit.plotters.stacked import StackedPlotter
+    from PlotKit.spec import StackSpec
+
+    spec = StackedPlotter(PlotConfig(PAGE_CFG, hist_cfg=HIST_CFG), None).build_spec(
+        "v", _synthetic(), True, {}, 10.0
+    )
+    defaults = StackSpec()
+    for field in (
+        "y_headroom",
+        "log_y_headroom",
+        "cms_label_fontsize",
+        "extra_label_styles",
+        "legend_ncol",
+        "legend_note",
+    ):
+        assert getattr(spec, field) == getattr(defaults, field), field
+
+
 def test_a_headroom_outside_0_1_raises():
     from PlotKit.backends import _log_y_max, _y_max
     from PlotKit.spec import StackSpec

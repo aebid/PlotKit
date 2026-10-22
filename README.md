@@ -99,7 +99,7 @@ CMS guidelines set them, and warns that these are not applied.
 | `legend.n_columns: 2` | Legend columns. |
 | `sgn_hist.show_yield: false` | Drop the `(yield N)` of each signal's legend entry (default `true`). |
 | `sgn_hist.norm_legend_note: "..."` | With `bkg` signal scaling, say it once, as a text-only legend entry, instead of `(norm. to bkg)` on every signal. |
-| `page_setup.y_headroom: 0.4`, `page_setup.log_y_headroom: 0.45` | The fraction of the y axis (linear / log) kept free above the highest bin, for the legend and labels, instead of `max_y_sf`. Also per variable in `histograms.yaml`. |
+| `page_setup.y_headroom: 0.4`, `page_setup.log_y_headroom: 0.45` | The fraction of the y axis (linear / log) kept free above the highest bin, for the legend and labels, instead of scaling the top by `max_y_sf`. On a log axis a fixed factor frees a share of the plot that depends on how many decades it spans; a headroom frees the same share on every plot. Also per variable in `histograms.yaml`. A variable's own setting beats the page's, and at the same level a headroom beats `max_y_sf`: the variable's headroom, then its `max_y_sf`, then the page's headroom, then the page's `max_y_sf`. |
 | `page_setup.cms_label_fontsize: 20` | Font size of the CMS / scope / lumi line. |
 
 **The CMS label line, for every configuration:** the scope (`scope_text`, e.g. `Preliminary`)

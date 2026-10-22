@@ -322,9 +322,17 @@ class StackedPlotter(BasePlotter):
 
     @classmethod
     def _headroom(cls, hd, page, name) -> Optional[float]:
-        """A headroom fraction, per variable else per page, checked to lie in (0, 1)."""
-        key = name if name in hd else f"page_setup.{name}"
-        headroom = cls._float_or_none(hd.get(name, page.get(name)), key)
+        """The headroom fraction (checked to lie in (0, 1)) of a y axis, or None to scale by
+        max_y_sf. A variable's own setting beats the page's, and at the same level a headroom
+        beats max_y_sf: the variable's headroom, then the variable's max_y_sf (None here), then
+        the page's headroom, then the page's max_y_sf (None)."""
+        if name in hd:
+            key, value = name, hd[name]
+        elif "max_y_sf" in hd:
+            return None
+        else:
+            key, value = f"page_setup.{name}", page.get(name)
+        headroom = cls._float_or_none(value, key)
         _check_headroom(key, headroom)
         return headroom
 
