@@ -11,6 +11,7 @@ import re
 from typing import Optional
 
 from .. import rootcompat as rc
+from ..backends import _check_headroom
 from ..histogram import stack_total, to_hist1d
 from ..spec import HistEntry, StackSpec, UncBand
 from .base import BasePlotter
@@ -173,13 +174,11 @@ class StackedPlotter(BasePlotter):
             y_min=float(page.get("y_min", 0.0)),
             y_min_log=float(page.get("y_min_log", 1e-2)),
             max_y_sf=max_y_sf,
-            log_y_headroom=self._float_or_none(
-                hd.get("log_y_headroom", page.get("log_y_headroom"))
+            log_y_headroom=self._headroom(hd, page, "log_y_headroom"),
+            y_headroom=self._headroom(hd, page, "y_headroom"),
+            cms_label_fontsize=self._float_or_none(
+                page.get("cms_label_fontsize"), "page_setup.cms_label_fontsize"
             ),
-            y_headroom=self._float_or_none(
-                hd.get("y_headroom", page.get("y_headroom"))
-            ),
-            cms_label_fontsize=self._float_or_none(page.get("cms_label_fontsize")),
             legend_note=(norm_note or "") if signals else "",
             draw_ratio=draw_ratio,
             ratio_title=ratio_title,
@@ -285,8 +284,10 @@ class StackedPlotter(BasePlotter):
                 extra.append(", ".join(texts))
                 styles.append(
                     {
-                        "fontsize": self._text_size_pt(first.get("text_size")),
-                        "bold": self._is_bold(first.get("font")),
+                        "fontsize": self._text_size_pt(
+                            first.get("text_size"), f"{boxes[0]}.text_size"
+                        ),
+                        "bold": self._is_bold(first.get("font"), f"{boxes[0]}.font"),
                     }
                 )
         else:
@@ -309,33 +310,45 @@ class StackedPlotter(BasePlotter):
         }
 
     @staticmethod
-    def _float_or_none(value) -> Optional[float]:
-        try:
-            return None if value is None else float(value)
-        except (TypeError, ValueError):
+    def _float_or_none(value, key) -> Optional[float]:
+        """An optional number from the config: None when unset, an error naming the key
+        when it is not a number -- a typo must not silently fall back to the default."""
+        if value is None:
             return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} = {value!r} is not a number") from None
+
+    @classmethod
+    def _headroom(cls, hd, page, name) -> Optional[float]:
+        """A headroom fraction, per variable else per page, checked to lie in (0, 1)."""
+        key = name if name in hd else f"page_setup.{name}"
+        headroom = cls._float_or_none(hd.get(name, page.get(name)), key)
+        _check_headroom(key, headroom)
+        return headroom
 
     @staticmethod
     def _box_text(cfg, custom, box) -> str:
         """A text box's text: the per-plot override, else the configured text."""
         return custom.get(box) or cfg.text_box(box).get("text", "")
 
-    @staticmethod
-    def _text_size_pt(text_size) -> Optional[float]:
+    @classmethod
+    def _text_size_pt(cls, text_size, key) -> Optional[float]:
         # Legacy text_size is a ROOT NDC fraction; the same mapping as the legend's.
-        try:
-            return max(8.0, min(30.0, float(text_size) * 600.0))
-        except (TypeError, ValueError):
-            return None
+        size = cls._float_or_none(text_size, key)
+        return None if size is None else max(8.0, min(30.0, size * 600.0))
 
     @staticmethod
-    def _is_bold(font) -> bool:
+    def _is_bold(font, key) -> bool:
         # ROOT font code: precision in the last digit, the font before it; 2, 3, 6, 7, 10
         # and 11 are the bold ones (62 = Helvetica bold).
+        if font is None:
+            return False
         try:
             return int(font) // 10 in (2, 3, 6, 7, 10, 11)
         except (TypeError, ValueError):
-            return False
+            raise ValueError(f"{key} = {font!r} is not a ROOT font code") from None
 
     @staticmethod
     def _legend_fontsize(legend) -> Optional[float]:

@@ -26,12 +26,31 @@ from .spec import StackSpec
 _t = rc.tlatex_to_mpl
 
 
+def _check_headroom(name: str, headroom) -> None:
+    """A headroom is the fraction of the axis kept free, so strictly between 0 and 1."""
+    if headroom is not None and not 0 < headroom < 1:
+        raise ValueError(
+            f"{name} = {headroom!r}: the fraction of the y axis kept free above the "
+            "highest bin must be strictly between 0 and 1"
+        )
+
+
 def _y_max(spec, y_max: float) -> float:
     """Top of a linear y axis: y_headroom of its height free above y_max, else max_y_sf."""
     headroom = spec.y_headroom
-    if headroom is None or not 0 < headroom < 1:
+    _check_headroom("y_headroom", headroom)
+    if headroom is None:
         return y_max * spec.max_y_sf
     return spec.y_min + (y_max - spec.y_min) / (1.0 - headroom)
+
+
+def _scope_line(spec) -> str:
+    """The text after "CMS": the scope, as "Simulation <scope>" when no data is shown --
+    built as mplhep's ``cms.label`` builds it, so both backends write the same."""
+    scope = spec.scope_text or ""
+    if not spec.is_data:
+        scope = f"Simulation {scope}"
+    return " ".join(scope.split())
 
 
 def _align_cms_label(ax) -> None:
@@ -66,7 +85,8 @@ def _align_cms_label(ax) -> None:
 def _log_y_max(spec, y_max: float) -> float:
     """Top of a log y axis: log_y_headroom of its height free above y_max, else max_y_sf."""
     headroom = spec.log_y_headroom
-    if headroom is None or not 0 < headroom < 1 or y_max <= spec.y_min_log:
+    _check_headroom("log_y_headroom", headroom)
+    if headroom is None or y_max <= spec.y_min_log:
         return y_max * spec.max_y_sf
     low, high = np.log10(spec.y_min_log), np.log10(y_max)
     return float(10 ** (low + (high - low) / (1.0 - headroom)))
@@ -190,40 +210,22 @@ class MplhepBackend(StyleBackend):
         )
 
     def _cms_label(self, hep, ax, spec):
-        size = {"fontsize": spec.cms_label_fontsize} if spec.cms_label_fontsize else {}
-        try:
-            try:
-                # mplhep >= 1 takes the scope ("Preliminary") as text= and ignores label=
-                hep.cms.label(
-                    ax=ax,
-                    data=spec.is_data,
-                    text=spec.scope_text,
-                    rlabel=_t(spec.lumi_text),
-                    loc=0,
-                    **size,
-                )
-            except TypeError:
-                hep.cms.label(
-                    ax=ax,
-                    data=spec.is_data,
-                    label=spec.scope_text,
-                    rlabel=_t(spec.lumi_text),
-                    loc=0,
-                    **size,
-                )
-            _align_cms_label(ax)
-        except TypeError:
-            # Older mplhep without rlabel: draw CMS text + manual lumi.
-            hep.cms.text(spec.scope_text or "", ax=ax)
-            if spec.lumi_text:
-                ax.text(
-                    1.0,
-                    1.005,
-                    _t(spec.lumi_text),
-                    transform=ax.transAxes,
-                    ha="right",
-                    va="bottom",
-                )
+        # mplhep >= 1.1.3 (the declared floor) takes the scope ("Preliminary") as text= and
+        # ignores label=; it prepends "Simulation" itself when data is False.
+        size = (
+            {"fontsize": spec.cms_label_fontsize}
+            if spec.cms_label_fontsize is not None
+            else {}
+        )
+        hep.cms.label(
+            ax=ax,
+            data=spec.is_data,
+            text=spec.scope_text,
+            rlabel=_t(spec.lumi_text),
+            loc=0,
+            **size,
+        )
+        _align_cms_label(ax)
 
     def render_stacked(self, spec: StackSpec, output_file: str) -> None:
         plt, hep, fig, ax, rax = self._new_figure(spec)
@@ -418,6 +420,37 @@ class CmsstyleBackend(StyleBackend):
         return th
 
     @staticmethod
+    def _additional_info(spec) -> list:
+        """The labels below "CMS", bold ones as TLatex ``#bf{}``. cmsstyle sizes the CMS line
+        and these labels itself, relative to the pad as the CMS guidelines set them, so the
+        font-size options are not applied -- and said so, rather than dropped silently.
+        """
+        ignored = [
+            name
+            for name, unset in (
+                ("cms_label_fontsize", spec.cms_label_fontsize is None),
+                (
+                    "label_lines text_size",
+                    not any(s.get("fontsize") for s in spec.extra_label_styles),
+                ),
+            )
+            if not unset
+        ]
+        if ignored:
+            warnings.warn(
+                f"cmsstyle backend: {', '.join(ignored)} not applied; cmsstyle sets the "
+                "label sizes itself",
+                UserWarning,
+            )
+        labels = []
+        for i, lab in enumerate(spec.extra_labels):
+            style = (
+                spec.extra_label_styles[i] if i < len(spec.extra_label_styles) else {}
+            )
+            labels.append(f"#bf{{{lab}}}" if style.get("bold") else lab)
+        return labels
+
+    @staticmethod
     def _root_color(ROOT, rgb):
         if isinstance(rgb, str):
             return ROOT.TColor.GetColor(rgb)
@@ -437,14 +470,14 @@ class CmsstyleBackend(StyleBackend):
         ROOT.gROOT.SetBatch(True)
         CMS.setCMSStyle()
         CMS.ResetAdditionalInfo()
-        for lab in spec.extra_labels:
+        for lab in self._additional_info(spec):
             CMS.AppendAdditionalInfo(lab)  # raw ROOT TLatex -- rendered natively
         # cmsstyle wants numeric lumi/energy; recover them from the legacy string.
         lumi_val, energy_val = _parse_lumi_energy(spec.lumi_text)
         if energy_val is not None:
             CMS.SetEnergy(energy_val)
         CMS.SetLumi(lumi_val if lumi_val is not None else None, run="")
-        CMS.SetExtraText(spec.scope_text)
+        CMS.SetExtraText(_scope_line(spec))
 
         edges = MplhepBackend._any_edges(spec)
         x_min, x_max = float(edges[0]), float(edges[-1])
@@ -468,7 +501,7 @@ class CmsstyleBackend(StyleBackend):
             )
 
         y_min = spec.y_min_log if spec.log_y else spec.y_min
-        y_max = ymax * spec.max_y_sf
+        y_max = _log_y_max(spec, ymax) if spec.log_y else _y_max(spec, ymax)
 
         want_ratio = _want_ratio(spec)
         if want_ratio:
@@ -502,7 +535,7 @@ class CmsstyleBackend(StyleBackend):
         if spec.log_x:
             ROOT.gPad.SetLogx(True)
 
-        leg = CMS.cmsLeg(0.55, 0.6, 0.92, 0.9)
+        leg = CMS.cmsLeg(0.55, 0.6, 0.92, 0.9, columns=spec.legend_ncol)
         stack.Draw("HIST SAME")
         keep.append(stack)
         for i, e in enumerate(spec.backgrounds):
@@ -535,6 +568,9 @@ class CmsstyleBackend(StyleBackend):
             d.Draw("PE SAME")
             keep.append(d)
             leg.AddEntry(d, spec.data.label, "pe")
+        if spec.legend_note:
+            # text-only entry, as in the mplhep legend
+            leg.AddEntry(ROOT.nullptr, spec.legend_note, "")
 
         CMS.CMS_lumi(ROOT.gPad)  # draw CMS + lumi on the active (main) pad
 

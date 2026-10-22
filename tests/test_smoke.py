@@ -216,8 +216,8 @@ def test_signal_scaled_to_background_integral():
     # Each signal is normalised so its integral equals the summed background.
     for sig in spec.signals:
         assert sig.hist.integral() == pytest.approx(bkg_total, rel=1e-9)
-    # The hardcoded "(x10)" suffix is replaced by the normalisation note.
-    assert spec.signals[0].label == "HH (norm. to bkg)"
+    # The hardcoded "(x10)" suffix is replaced by the normalisation note (then the yield).
+    assert spec.signals[0].label.startswith("HH (norm. to bkg) (yield ")
 
 
 def test_cmsstyle_backend_optional(tmp_path):
@@ -351,3 +351,134 @@ def test_a_bold_label_is_bold_inside_its_math_too():
         == r"$\mathbf{\mathbf{hh}\rightarrow\mathbf{bbWW}}$"
     )
     assert _bold_mathtext("Signal Region") == "Signal Region"
+
+
+@pytest.mark.parametrize(
+    "page_update, key",
+    [
+        ({"page_setup": {"y_headroom": "45%"}}, "page_setup.y_headroom"),
+        ({"page_setup": {"log_y_headroom": 40}}, "page_setup.log_y_headroom"),
+        ({"page_setup": {"cms_label_fontsize": "big"}}, "cms_label_fontsize"),
+        ({"ana_text": {"text": "demo", "font": "bold"}}, "ana_text.font"),
+        ({"ana_text": {"text": "demo", "text_size": "3%"}}, "ana_text.text_size"),
+    ],
+)
+def test_an_unreadable_style_value_raises_naming_its_key(page_update, key):
+    from PlotKit.config import PlotConfig
+    from PlotKit.plotters.stacked import StackedPlotter
+
+    page = dict(LABEL_LINES_CFG)
+    for block, values in page_update.items():
+        page[block] = dict(page.get(block, {}), **values)
+    plotter = StackedPlotter(PlotConfig(page, hist_cfg=HIST_CFG), None)
+    with pytest.raises(ValueError, match=key):
+        plotter.build_spec("v", _synthetic(), True, dict(CUSTOM_TEXTS), None)
+
+
+def test_a_headroom_outside_0_1_raises():
+    from PlotKit.backends import _log_y_max, _y_max
+    from PlotKit.spec import StackSpec
+
+    for headroom in (0.0, 1.0, -0.2, 40.0, float("nan")):
+        with pytest.raises(ValueError, match="y_headroom"):
+            _y_max(StackSpec(y_headroom=headroom), 100.0)
+        with pytest.raises(ValueError, match="log_y_headroom"):
+            _log_y_max(StackSpec(log_y_headroom=headroom), 100.0)
+
+
+@pytest.mark.parametrize(
+    "is_data, scope_line",
+    [(True, "Preliminary"), (False, "Simulation Preliminary")],
+)
+def test_the_cms_label_draws_the_scope(is_data, scope_line):
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import mplhep as hep
+
+    from PlotKit.backends import MplhepBackend, _scope_line
+    from PlotKit.spec import StackSpec
+
+    spec = StackSpec(scope_text="Preliminary", lumi_text="1 fb^{-1}", is_data=is_data)
+    assert _scope_line(spec) == scope_line
+    fig, ax = plt.subplots()
+    MplhepBackend()._cms_label(hep, ax, spec)
+    # drawn with text= (label= would drop it), as "Simulation <scope>" without data
+    assert scope_line in [t.get_text() for t in ax.texts]
+    plt.close(fig)
+
+
+NOTE_CFG = dict(
+    LABEL_LINES_CFG,
+    legend={"text_size": 0.03, "n_columns": 2},
+    sgn_hist=dict(
+        PAGE_CFG["sgn_hist"], show_yield=False, norm_legend_note="Sig. norm."
+    ),
+)
+
+
+def test_mplhep_draws_simulation_the_note_and_the_columns(tmp_path, monkeypatch):
+    import matplotlib.figure
+
+    seen = {}
+
+    def keep(fig, *args, **kwargs):
+        ax = fig.axes[0]
+        legend = ax.get_legend()
+        seen["texts"] = [t.get_text() for t in ax.texts]
+        seen["legend"] = [t.get_text() for t in legend.get_texts()]
+        seen["ncol"] = legend._ncols
+
+    monkeypatch.setattr(matplotlib.figure.Figure, "savefig", keep)
+    Plotter(NOTE_CFG, hist_cfg=HIST_CFG).plot(
+        "v", _synthetic(), str(tmp_path / "v.pdf"), False, dict(CUSTOM_TEXTS), "bkg"
+    )
+    assert "Simulation Preliminary" in seen["texts"]
+    assert seen["legend"][-1] == "Sig. norm."
+    assert "HH" in seen["legend"]
+    assert seen["ncol"] == 2
+
+
+def test_cmsstyle_bolds_labels_and_says_it_ignores_their_sizes():
+    from PlotKit.backends import CmsstyleBackend
+    from PlotKit.config import PlotConfig
+    from PlotKit.plotters.stacked import StackedPlotter
+
+    plotter = StackedPlotter(PlotConfig(LABEL_LINES_CFG, hist_cfg=HIST_CFG), None)
+    spec = plotter.build_spec("v", _synthetic(), True, dict(CUSTOM_TEXTS), None)
+    with pytest.warns(UserWarning, match="label_lines text_size"):
+        labels = CmsstyleBackend._additional_info(spec)
+    assert labels == ["#bf{demo}", "#bf{#mu#mu, res2b}", "Signal Region"]
+
+
+def test_cmsstyle_draws_simulation_the_note_and_the_columns(tmp_path, monkeypatch):
+    pytest.importorskip("ROOT")
+    CMS = pytest.importorskip("cmsstyle")
+    import cmsstyle.cmsstyle as cms_module
+
+    seen = {}
+
+    def keep(canvas, *args, **kwargs):
+        pads = [canvas] + [
+            p for p in canvas.GetListOfPrimitives() if p.InheritsFrom("TPad")
+        ]
+        legend = [
+            p
+            for pad in pads
+            for p in pad.GetListOfPrimitives()
+            if p.InheritsFrom("TLegend")
+        ][0]
+        seen["legend"] = [e.GetLabel() for e in legend.GetListOfPrimitives()]
+        seen["ncol"] = legend.GetNColumns()
+        seen["extra_text"] = cms_module.extraText
+
+    monkeypatch.setattr(CMS, "SaveCanvas", keep)
+    with pytest.warns(UserWarning, match="cmsstyle backend"):
+        Plotter(NOTE_CFG, hist_cfg=HIST_CFG, backend="cmsstyle").plot(
+            "v", _synthetic(), str(tmp_path / "v.pdf"), False, dict(CUSTOM_TEXTS), "bkg"
+        )
+    assert seen["extra_text"] == "Simulation Preliminary"
+    assert seen["legend"][-1] == "Sig. norm."
+    assert "HH" in seen["legend"]
+    assert seen["ncol"] == 2
