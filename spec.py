@@ -93,8 +93,9 @@ class StackSpec:
     scope_text: str = "Preliminary"
     is_data: bool = True
     lumi_text: str = ""
-    # Font size of the CMS label line (CMS, scope and lumi). None: the style's.
-    cms_label_fontsize: Optional[float] = None
+    # Base font size of the CMS label line, in points or a matplotlib name ("large"): the
+    # scope at it, "CMS" at 1.3x and the lumi at 1/1.1x (mplhep). None: the style's.
+    cms_label_fontsize: Optional[Union[float, str]] = None
     extra_labels: List[str] = dataclasses.field(default_factory=list)
     # Per extra label: {"fontsize": pt, "bold": bool}. Empty: every label in the legend's size.
     extra_label_styles: List[dict] = dataclasses.field(default_factory=list)

@@ -450,6 +450,102 @@ def test_without_the_new_options_the_spec_is_as_before():
         assert getattr(spec, field) == getattr(defaults, field), field
 
 
+def test_the_log_headroom_top_is_smooth_near_y_min_log():
+    from PlotKit.backends import _log_y_max
+    from PlotKit.spec import StackSpec
+
+    spec = StackSpec(y_min_log=1e-2, log_y_headroom=0.5)
+    # within a decade of y_min_log the free share is of that decade: the same top on both
+    # sides of y_min_log (it jumped from 3.3 decades to 0.008 at y_min_log)
+    tops = [_log_y_max(spec, y) for y in (0.0, 0.0099, 0.0101, 0.1)]
+    assert tops == pytest.approx([1.0] * 4)
+    # and it grows continuously from there
+    assert _log_y_max(spec, 0.1001) == pytest.approx(1.0, rel=1e-2)
+    assert _log_y_max(spec, 1e2) == pytest.approx(1e6)
+
+
+@pytest.mark.parametrize(
+    "label_lines, match",
+    [
+        (["ana_text", "ch_text"], "list of lines"),
+        ("ana_text", "list of lines"),
+        ([["ana_text"], []], "list of lines"),
+        ([["ana_text"], ["ch_txt"]], r"not declared: \['ch_txt'\]"),
+    ],
+)
+def test_label_lines_must_be_lines_of_declared_boxes(label_lines, match):
+    page = dict(
+        LABEL_LINES_CFG,
+        page_setup=dict(LABEL_LINES_CFG["page_setup"], label_lines=label_lines),
+    )
+    with pytest.raises(ValueError, match=match):
+        _labels(page)
+
+
+def test_label_lines_boxes_are_checked_against_text_boxes():
+    page = dict(
+        LABEL_LINES_CFG,
+        page_setup=dict(
+            LABEL_LINES_CFG["page_setup"], text_boxes=["ana_text", "ch_text"]
+        ),
+    )
+    with pytest.raises(ValueError, match="cat_text"):
+        _labels(page)
+
+
+@pytest.mark.parametrize(
+    "block, values, key",
+    [
+        ("sgn_hist", {"show_yield": "false"}, "show_yield"),
+        ("legend", {"n_columns": 0}, "n_columns"),
+        ("legend", {"n_columns": None}, "n_columns"),
+        ("legend", {"n_columns": 1.5}, "n_columns"),
+        ("page_setup", {"cms_label_fontsize": 0}, "cms_label_fontsize"),
+    ],
+)
+def test_a_misread_option_raises_naming_its_key(block, values, key):
+    from PlotKit.config import PlotConfig
+    from PlotKit.plotters.stacked import StackedPlotter
+
+    page = dict(PAGE_CFG, **{block: dict(PAGE_CFG.get(block, {}), **values)})
+    plotter = StackedPlotter(PlotConfig(page, hist_cfg=HIST_CFG), None)
+    with pytest.raises(ValueError, match=key):
+        plotter.build_spec("v", _synthetic(), True, {}, None)
+
+
+def test_a_named_cms_label_size_is_used(tmp_path):
+    from PlotKit.config import PlotConfig
+    from PlotKit.plotters.stacked import StackedPlotter
+
+    page = dict(
+        PAGE_CFG, page_setup=dict(PAGE_CFG["page_setup"], cms_label_fontsize="large")
+    )
+    spec = StackedPlotter(PlotConfig(page, hist_cfg=HIST_CFG), None).build_spec(
+        "v", _synthetic(), True, {}, None
+    )
+    assert spec.cms_label_fontsize == "large"
+    out = tmp_path / "large.png"
+    Plotter(page, hist_cfg=HIST_CFG).plot("v", _synthetic(), str(out), True, {})
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_an_empty_per_plot_label_is_no_label():
+    page = dict(LABEL_LINES_CFG, customreg_text={"text": "Default region"})
+    texts = dict(CUSTOM_TEXTS, customreg_text="")
+    from PlotKit.config import PlotConfig
+    from PlotKit.plotters.stacked import StackedPlotter
+
+    plotter = StackedPlotter(PlotConfig(page, hist_cfg=HIST_CFG), "mplhep")
+    assert plotter._labels(plotter.config, texts, True)["extra_labels"] == [
+        "demo",
+        "#mu#mu, res2b",
+    ]
+    # not passed at all: the configured text
+    del texts["customreg_text"]
+    labels = plotter._labels(plotter.config, texts, True)["extra_labels"]
+    assert labels[-1] == "Default region"
+
+
 def test_a_headroom_outside_0_1_raises():
     from PlotKit.backends import _log_y_max, _y_max
     from PlotKit.spec import StackSpec

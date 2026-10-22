@@ -111,9 +111,12 @@ def _log_y_max(spec, y_max: float) -> float:
     """Top of a log y axis: log_y_headroom of its height free above y_max, else max_y_sf."""
     headroom = spec.log_y_headroom
     _check_headroom("log_y_headroom", headroom)
-    if headroom is None or y_max <= spec.y_min_log:
+    if headroom is None:
         return y_max * spec.max_y_sf
-    low, high = np.log10(spec.y_min_log), np.log10(y_max)
+    # The free share is of at least one decade above y_min_log, so a nearly empty plot still
+    # gets room, and the top changes smoothly with y_max instead of jumping at y_min_log.
+    low = np.log10(spec.y_min_log)
+    high = max(np.log10(y_max) if y_max > 0 else low, low + 1.0)
     return float(10 ** (low + (high - low) / (1.0 - headroom)))
 
 
@@ -253,6 +256,7 @@ class MplhepBackend(StyleBackend):
         proportions, down to _CMS_LABEL_MIN_SCALE of its size; below that it warns.
         """
         import matplotlib
+        from matplotlib.font_manager import FontProperties
 
         # mplhep >= 1.1.3 (the declared floor) takes the scope ("Preliminary") as text= and
         # ignores label=; it prepends "Simulation" itself when data is False.
@@ -268,24 +272,27 @@ class MplhepBackend(StyleBackend):
             _align_cms_label(ax, texts)
             return texts
 
-        size = spec.cms_label_fontsize
-        texts = draw(size)
-        start = size if size is not None else float(matplotlib.rcParams["font.size"])
-        floor = _CMS_LABEL_MIN_SCALE * start
+        texts = draw(spec.cms_label_fontsize)
+        # in points, for the shrinking; a named size ("large") is relative to the style's
+        current = (
+            float(matplotlib.rcParams["font.size"])
+            if spec.cms_label_fontsize is None
+            else FontProperties(size=spec.cms_label_fontsize).get_size_in_points()
+        )
+        floor = _CMS_LABEL_MIN_SCALE * current
         for _ in range(4):
             overlap = _cms_label_overlap(ax, *texts[:3])
             if overlap <= 0:
                 return
-            current = start if size is None else size
             if current <= floor:
                 break
             # every width scales with the font size: shrink by the part that does not fit
             width = _cms_label_width(ax, texts[:3])
-            size = max(floor, current * (1.0 - overlap / width) * 0.98)
+            current = max(floor, current * (1.0 - overlap / width) * 0.98)
             for t in texts:
                 if t is not None:
                     t.remove()
-            texts = draw(size)
+            texts = draw(current)
         if _cms_label_overlap(ax, *texts[:3]) <= 0:
             return
         warnings.warn(

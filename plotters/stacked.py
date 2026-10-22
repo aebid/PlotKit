@@ -114,7 +114,12 @@ class StackedPlotter(BasePlotter):
         # sgn_hist options: show_yield (default true) adds each signal's yield to its label;
         # norm_legend_note, with "bkg" scaling, says it once as a legend entry instead of
         # "(norm. to bkg)" on every signal
-        show_yield = bool(sgn_style.get("show_yield", True))
+        show_yield = sgn_style.get("show_yield", True)
+        if not isinstance(show_yield, bool):
+            # a quoted 'false' is a non-empty string, which bool() would read as true
+            raise ValueError(
+                f"sgn_hist.show_yield = {show_yield!r} must be true or false"
+            )
         norm_note = sgn_style.get("norm_legend_note") if norm_to_bkg else None
         for H, raw_integral, plot_name, color in raw_signals:
             if norm_to_bkg:
@@ -176,7 +181,7 @@ class StackedPlotter(BasePlotter):
             max_y_sf=max_y_sf,
             log_y_headroom=self._headroom(hd, page, "log_y_headroom"),
             y_headroom=self._headroom(hd, page, "y_headroom"),
-            cms_label_fontsize=self._float_or_none(
+            cms_label_fontsize=self._font_size(
                 page.get("cms_label_fontsize"), "page_setup.cms_label_fontsize"
             ),
             legend_note=(norm_note or "") if signals else "",
@@ -259,6 +264,33 @@ class StackedPlotter(BasePlotter):
         except (TypeError, ValueError):
             return default
 
+    # The text boxes under the CMS line, in order; HistPlotter fills them per plot.
+    _LABEL_BOXES = ("ana_text", "ch_text", "cat_text", "customreg_text")
+
+    @classmethod
+    def _check_label_lines(cls, cfg, label_lines) -> None:
+        """page_setup.label_lines must be a list of lines, each a list of text box names
+        declared in page_setup.text_boxes (or, without that list, a label box or a box the
+        page configures): a flat list or a typo would otherwise drop labels silently."""
+        if label_lines is None:
+            return
+        if not isinstance(label_lines, list) or not all(
+            isinstance(line, list) and line and all(isinstance(b, str) for b in line)
+            for line in label_lines
+        ):
+            raise ValueError(
+                f"page_setup.label_lines = {label_lines!r} must be a list of lines, each a "
+                "list of text box names, e.g. [[ana_text], [ch_text, cat_text]]"
+            )
+        declared = set(cfg.text_box_names()) or set(cls._LABEL_BOXES) | {
+            name for name, block in cfg.page.items() if isinstance(block, dict)
+        }
+        unknown = sorted({b for line in label_lines for b in line} - declared)
+        if unknown:
+            raise ValueError(
+                f"page_setup.label_lines names text boxes that are not declared: {unknown}"
+            )
+
     def _labels(self, cfg, custom, want_data) -> dict:
         """Map the legacy text boxes + per-plot ``custom`` overrides to spec labels."""
         # scope: HistPlotter packs "CMS <scope>" into datasim_text; recover <scope>.
@@ -271,6 +303,7 @@ class StackedPlotter(BasePlotter):
         lumi = cfg.text_box("lumi_text").get("text", "")
 
         label_lines = cfg.page_setup.get("label_lines")
+        self._check_label_lines(cfg, label_lines)
         styles = []
         if label_lines:
             # One label per line of text boxes, in the size and weight of the first box
@@ -292,8 +325,7 @@ class StackedPlotter(BasePlotter):
                 )
         else:
             extra_sources = [
-                self._box_text(cfg, custom, box)
-                for box in ("ana_text", "ch_text", "cat_text", "customreg_text")
+                self._box_text(cfg, custom, box) for box in self._LABEL_BOXES
             ]
             extra = [t for t in extra_sources if t]
 
@@ -306,7 +338,7 @@ class StackedPlotter(BasePlotter):
             "extra_label_styles": styles,
             "legend_loc": "upper right",
             "legend_fontsize": self._legend_fontsize(legend),
-            "legend_ncol": int(legend.get("n_columns", 1)),
+            "legend_ncol": self._n_columns(legend),
         }
 
     @staticmethod
@@ -319,6 +351,36 @@ class StackedPlotter(BasePlotter):
             return float(value)
         except (TypeError, ValueError):
             raise ValueError(f"{key} = {value!r} is not a number") from None
+
+    # The font sizes matplotlib (and so mplhep) accepts by name, relative to the style's.
+    _NAMED_FONT_SIZES = {
+        "xx-small",
+        "x-small",
+        "small",
+        "medium",
+        "large",
+        "x-large",
+        "xx-large",
+        "smaller",
+        "larger",
+    }
+
+    @classmethod
+    def _font_size(cls, value, key):
+        """An optional font size: points > 0, or a matplotlib size name such as "large"."""
+        if isinstance(value, str) and value in cls._NAMED_FONT_SIZES:
+            return value
+        size = cls._float_or_none(value, key)
+        if size is not None and not size > 0:
+            raise ValueError(f"{key} = {value!r} must be a positive font size")
+        return size
+
+    @staticmethod
+    def _n_columns(legend) -> int:
+        n = legend.get("n_columns", 1)
+        if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+            raise ValueError(f"legend n_columns = {n!r} must be a whole number >= 1")
+        return n
 
     @classmethod
     def _headroom(cls, hd, page, name) -> Optional[float]:
@@ -338,8 +400,12 @@ class StackedPlotter(BasePlotter):
 
     @staticmethod
     def _box_text(cfg, custom, box) -> str:
-        """A text box's text: the per-plot override, else the configured text."""
-        return custom.get(box) or cfg.text_box(box).get("text", "")
+        """A text box's text: the per-plot value when one is passed -- an empty one too, which
+        means no label (HistPlotter passes customreg_text="" for a region without a label) --
+        else the configured text."""
+        if box in custom:
+            return custom[box] or ""
+        return cfg.text_box(box).get("text", "")
 
     @classmethod
     def _text_size_pt(cls, text_size, key) -> Optional[float]:

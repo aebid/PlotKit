@@ -95,20 +95,21 @@ CMS guidelines set them, and warns that these are not applied.
 
 | Setting (`cms_stacked.yaml`) | Effect |
 |---|---|
-| `page_setup.label_lines: [[ana_text], [ch_text, cat_text], [customreg_text]]` | The labels top left, one line per entry: the boxes of an entry share a line (joined with `, `), in the `text_size` and `font` of its first box (a bold ROOT font, e.g. 62, is bold also inside math; `#bf{}` with cmsstyle). Without it every box is a line of its own, in the legend's size. |
-| `legend.n_columns: 2` | Legend columns. |
-| `sgn_hist.show_yield: false` | Drop the `(yield N)` of each signal's legend entry (default `true`). |
+| `page_setup.label_lines: [[ana_text], [ch_text, cat_text], [customreg_text]]` | The labels top left, one line per entry: the boxes of an entry share a line (joined with `, `), in the `text_size` and `font` of its first box (a bold ROOT font, e.g. 62, is bold also inside math; `#bf{}` with cmsstyle). Each entry must be a list of box names declared in `page_setup.text_boxes`. Without it every box is a line of its own, in the legend's `text_size` (16 pt when that is not set either). |
+| `legend.n_columns: 2` | Legend columns, a whole number >= 1. |
+| `sgn_hist.show_yield: false` | Drop the `(yield N)` of each signal's legend entry (default `true`; `true` or `false`, not a quoted string). |
 | `sgn_hist.norm_legend_note: "..."` | With `bkg` signal scaling, say it once, as a text-only legend entry, instead of `(norm. to bkg)` on every signal. |
 | `page_setup.y_headroom: 0.4`, `page_setup.log_y_headroom: 0.45` | The fraction of the y axis (linear / log) kept free above the highest bin, for the legend and labels, instead of scaling the top by `max_y_sf`. On a log axis a fixed factor frees a share of the plot that depends on how many decades it spans; a headroom frees the same share on every plot. Also per variable in `histograms.yaml`. A variable's own setting beats the page's, and at the same level a headroom beats `max_y_sf`: the variable's headroom, then its `max_y_sf`, then the page's headroom, then the page's `max_y_sf`. |
-| `page_setup.cms_label_fontsize: 20` | Font size of the CMS / scope / lumi line. |
+| `page_setup.cms_label_fontsize: 20` | Base font size of the CMS line, in points (> 0) or a matplotlib name such as `large`: mplhep draws the scope at it, "CMS" at 1.3x and the lumi at 1/1.1x, so 20 gives 26 / 20 / 18.2 pt. |
 
 **The CMS label line, for every configuration:** the scope (`scope_text`, e.g. `Preliminary`)
 is now drawn -- it is passed as `text=`, while mplhep 1.x ignores the former `label=`, which
 dropped it -- as "Simulation <scope>" when no data is shown, in both backends. With mplhep,
 "CMS", the scope and the lumi share one baseline, and a line that would run into the lumi (a
 long scope, or "Simulation" added without data) is drawn smaller until it fits, down to 60% of
-its size; below that it warns to set a smaller `cms_label_fontsize`. This needs **mplhep >= 1.1.3** (declared in
-`pyproject.toml`); 1.1.0 fails on matplotlib 3.11 for any plot with a scope.
+its size; below that it warns to set a smaller `cms_label_fontsize`. This needs
+**mplhep >= 1.1.3** (declared in `pyproject.toml`); 1.1.0 fails on matplotlib 3.11 for any plot
+with a scope.
 
 ## Architecture / extension points
 
