@@ -7,6 +7,7 @@ panel) directly from the unchanged analysis ``config/plot/*.yaml`` files.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Optional
 
@@ -179,8 +180,8 @@ class StackedPlotter(BasePlotter):
             y_min=float(page.get("y_min", 0.0)),
             y_min_log=float(page.get("y_min_log", 1e-2)),
             max_y_sf=max_y_sf,
-            log_y_headroom=self._headroom(hd, page, "log_y_headroom"),
-            y_headroom=self._headroom(hd, page, "y_headroom"),
+            log_y_headroom=self._headroom(hist_name, hd, page, "log_y_headroom"),
+            y_headroom=self._headroom(hist_name, hd, page, "y_headroom"),
             cms_label_fontsize=self._font_size(
                 page.get("cms_label_fontsize"), "page_setup.cms_label_fontsize"
             ),
@@ -269,22 +270,26 @@ class StackedPlotter(BasePlotter):
 
     @classmethod
     def _check_label_lines(cls, cfg, label_lines) -> None:
-        """page_setup.label_lines must be a list of lines, each a list of text box names
-        declared in page_setup.text_boxes (or, without that list, a label box or a box the
-        page configures): a flat list or a typo would otherwise drop labels silently."""
+        """page_setup.label_lines must be a non-empty list of lines, each a list of text box
+        names declared in page_setup.text_boxes (or, without that list, of the label boxes,
+        _LABEL_BOXES): a flat list or a typo would otherwise drop labels silently."""
         if label_lines is None:
             return
-        if not isinstance(label_lines, list) or not all(
-            isinstance(line, list) and line and all(isinstance(b, str) for b in line)
-            for line in label_lines
+        if (
+            not isinstance(label_lines, list)
+            or not label_lines
+            or not all(
+                isinstance(line, list)
+                and line
+                and all(isinstance(b, str) for b in line)
+                for line in label_lines
+            )
         ):
             raise ValueError(
                 f"page_setup.label_lines = {label_lines!r} must be a list of lines, each a "
                 "list of text box names, e.g. [[ana_text], [ch_text, cat_text]]"
             )
-        declared = set(cfg.text_box_names()) or set(cls._LABEL_BOXES) | {
-            name for name, block in cfg.page.items() if isinstance(block, dict)
-        }
+        declared = set(cfg.text_box_names()) or set(cls._LABEL_BOXES)
         unknown = sorted({b for line in label_lines for b in line} - declared)
         if unknown:
             raise ValueError(
@@ -344,13 +349,17 @@ class StackedPlotter(BasePlotter):
     @staticmethod
     def _float_or_none(value, key) -> Optional[float]:
         """An optional number from the config: None when unset, an error naming the key
-        when it is not a number -- a typo must not silently fall back to the default."""
+        when it is not a finite number -- a typo must not silently fall back to the default,
+        and a YAML ``true`` or ``.inf`` is not a size."""
         if value is None:
             return None
         try:
-            return float(value)
+            number = None if isinstance(value, bool) else float(value)
         except (TypeError, ValueError):
-            raise ValueError(f"{key} = {value!r} is not a number") from None
+            number = None
+        if number is None or not math.isfinite(number):
+            raise ValueError(f"{key} = {value!r} is not a number")
+        return number
 
     # The font sizes matplotlib (and so mplhep) accepts by name, relative to the style's.
     _NAMED_FONT_SIZES = {
@@ -383,13 +392,13 @@ class StackedPlotter(BasePlotter):
         return n
 
     @classmethod
-    def _headroom(cls, hd, page, name) -> Optional[float]:
+    def _headroom(cls, hist_name, hd, page, name) -> Optional[float]:
         """The headroom fraction (checked to lie in (0, 1)) of a y axis, or None to scale by
         max_y_sf. A variable's own setting beats the page's, and at the same level a headroom
         beats max_y_sf: the variable's headroom, then the variable's max_y_sf (None here), then
         the page's headroom, then the page's max_y_sf (None)."""
         if name in hd:
-            key, value = name, hd[name]
+            key, value = f"{hist_name}.{name}", hd[name]
         elif "max_y_sf" in hd:
             return None
         else:
@@ -420,6 +429,8 @@ class StackedPlotter(BasePlotter):
         if font is None:
             return False
         try:
+            if isinstance(font, bool):
+                raise TypeError
             return int(font) // 10 in (2, 3, 6, 7, 10, 11)
         except (TypeError, ValueError):
             raise ValueError(f"{key} = {font!r} is not a ROOT font code") from None

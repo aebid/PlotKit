@@ -168,12 +168,22 @@ def _align_cms_label(ax, texts) -> None:
 _CMS_LABEL_MIN_SCALE = 0.6
 
 
+def _renderer(fig):
+    """The figure's renderer. Only Agg-type canvases have ``get_renderer``; the pdf, svg and
+    ps ones that _new_figure keeps do not, so fall back to the figure's, as mplhep does.
+    """
+    canvas = fig.canvas
+    if hasattr(canvas, "get_renderer"):
+        return canvas.get_renderer()
+    return fig._get_renderer()
+
+
 def _cms_label_overlap(ax, cms, scope, lumi) -> float:
     """By how many pixels "CMS <scope>" runs into the lumi, a small gap (half the scope's
     font) included; <= 0 when the line fits."""
     if lumi is None or not lumi.get_text():
         return 0.0
-    renderer = ax.figure.canvas.get_renderer()
+    renderer = _renderer(ax.figure)
     left = [t for t in (cms, scope) if t is not None and t.get_text()]
     if not left:
         return 0.0
@@ -184,7 +194,7 @@ def _cms_label_overlap(ax, cms, scope, lumi) -> float:
 
 def _cms_label_width(ax, texts) -> float:
     """The width in pixels of the texts of the CMS line, the room they take together."""
-    renderer = ax.figure.canvas.get_renderer()
+    renderer = _renderer(ax.figure)
     return sum(
         t.get_window_extent(renderer).width
         for t in texts
@@ -497,6 +507,7 @@ class MplhepBackend(StyleBackend):
             frameon=False,
             fontsize=spec.legend_fontsize,
             ncol=spec.legend_ncol,
+            borderaxespad=self._legend_axes_pad(spec),
         )
 
         # ratio panel
@@ -511,6 +522,24 @@ class MplhepBackend(StyleBackend):
 
         fig.savefig(output_file, bbox_inches="tight")
         plt.close(fig)
+
+    @staticmethod
+    def _legend_axes_pad(spec) -> float:
+        """The legend's distance from the axes, in units of its font size: matplotlib's 0.5,
+        or more when the style's inward major ticks are longer than the padding, so that no
+        tick runs into the legend text (CMS style: 12 pt ticks, 10 pt for a 0.017 legend).
+        """
+        import matplotlib
+        from matplotlib.font_manager import FontProperties
+
+        fontsize = FontProperties(
+            size=spec.legend_fontsize or matplotlib.rcParams["legend.fontsize"]
+        ).get_size_in_points()
+        tick = max(
+            float(matplotlib.rcParams["xtick.major.size"]),
+            float(matplotlib.rcParams["ytick.major.size"]),
+        )
+        return max(0.5, tick / fontsize)
 
     @staticmethod
     def _set_xrange(ax, edges):

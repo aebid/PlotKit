@@ -65,7 +65,7 @@ its absence.
 
 ## Repository facts
 
-Verified 2026-08-27; re-check before relying on any of it.
+Verified 2026-10-23; re-check before relying on any of it.
 
 | | |
 |---|---|
@@ -73,4 +73,4 @@ Verified 2026-08-27; re-check before relying on any of it.
 | Packaging | `pyproject.toml` (setuptools); depends on numpy, matplotlib, mplhep, pyyaml, uproot. ROOT is optional |
 | Tests | `tests/` — `test_cli.py`, `test_config.py`, `test_rootcompat.py`, `test_smoke.py`, run with pytest |
 | Consumed as | a submodule of FLAF at `FLAF/PlotKit`; the fork remote is `kandrosov/FLAF-PlotKit` |
-| Workflows | `formatting-check`, `repo-sanity-checks`, `trigger-flaf-integration` |
+| Workflows | `formatting-check`, `repo-sanity-checks`, `trigger-flaf-integration`, `unit-tests` (pytest on PRs and pushes to main: `unit-tests` with flaf_env's plotting pins and no ROOT, so the cmsstyle tests skip; `cmsstyle-tests` with conda-forge ROOT and cmsstyle, where `PLOTKIT_REQUIRE_ROOT` makes them fail instead of skip) |

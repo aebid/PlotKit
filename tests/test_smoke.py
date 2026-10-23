@@ -390,6 +390,12 @@ def test_a_bold_label_that_would_not_parse_stays_unbolded(monkeypatch):
         ({"page_setup": {"cms_label_fontsize": "big"}}, "cms_label_fontsize"),
         ({"ana_text": {"text": "demo", "font": "bold"}}, "ana_text.font"),
         ({"ana_text": {"text": "demo", "text_size": "3%"}}, "ana_text.text_size"),
+        # a YAML true or .inf is not a size, nor true a font
+        ({"page_setup": {"cms_label_fontsize": True}}, "cms_label_fontsize"),
+        ({"page_setup": {"cms_label_fontsize": float("inf")}}, "cms_label_fontsize"),
+        ({"ana_text": {"text": "demo", "text_size": True}}, "ana_text.text_size"),
+        ({"ana_text": {"text": "demo", "font": True}}, "ana_text.font"),
+        ({"page_setup": {"y_headroom": float("nan")}}, "page_setup.y_headroom"),
     ],
 )
 def test_an_unreadable_style_value_raises_naming_its_key(page_update, key):
@@ -428,6 +434,16 @@ def test_a_variables_own_y_range_setting_beats_the_pages(var, page, headroom, ma
     )
     assert spec.y_headroom == headroom
     assert spec.max_y_sf == max_y_sf
+
+
+def test_a_bad_variable_headroom_names_the_variable():
+    from PlotKit.config import PlotConfig
+    from PlotKit.plotters.stacked import StackedPlotter
+
+    hist_cfg = {"v": dict(HIST_CFG["v"], y_headroom=1.4)}
+    plotter = StackedPlotter(PlotConfig(PAGE_CFG, hist_cfg=hist_cfg), None)
+    with pytest.raises(ValueError, match=r"^v\.y_headroom = 1\.4"):
+        plotter.build_spec("v", _synthetic(), True, {}, None)
 
 
 def test_without_the_new_options_the_spec_is_as_before():
@@ -470,7 +486,11 @@ def test_the_log_headroom_top_is_smooth_near_y_min_log():
         (["ana_text", "ch_text"], "list of lines"),
         ("ana_text", "list of lines"),
         ([["ana_text"], []], "list of lines"),
+        ([], "list of lines"),
         ([["ana_text"], ["ch_txt"]], r"not declared: \['ch_txt'\]"),
+        # without text_boxes only the label boxes: not the era file's or a style block
+        ([["ana_text"], ["channel_text", "cat_text"]], r"\['channel_text'\]"),
+        ([["ana_text"], ["legend"]], r"\['legend'\]"),
     ],
 )
 def test_label_lines_must_be_lines_of_declared_boxes(label_lines, match):
@@ -1031,3 +1051,112 @@ def test_cmsstyle_shrinks_a_cms_line_that_would_run_into_the_lumi(
     with pytest.warns(UserWarning, match="overlaps the lumi text"):
         _cmsstyle_plot(monkeypatch, tmp_path, cfg, _synthetic(), False, 10.0)
     assert cms_module.cmsTextSize == pytest.approx(0.6 * 0.75)
+
+
+def _mplhep_axes(monkeypatch, cfg, want_data=True, custom=None):
+    """Render through the mplhep backend and return the main axes as saved."""
+    import matplotlib.figure
+
+    seen = {}
+    monkeypatch.setattr(
+        matplotlib.figure.Figure,
+        "savefig",
+        lambda fig, *args, **kwargs: seen.update(ax=fig.axes[0]),
+    )
+    Plotter(cfg, hist_cfg=HIST_CFG).plot(
+        "v",
+        _synthetic(),
+        "unused.pdf",
+        want_data,
+        dict(CUSTOM_TEXTS if custom is None else custom),
+        10.0,
+    )
+    return seen["ax"]
+
+
+def test_mplhep_renders_under_the_pdf_svg_and_ps_backends(tmp_path):
+    import matplotlib
+
+    previous = matplotlib.get_backend()
+    try:
+        for backend in ("pdf", "svg", "ps"):
+            matplotlib.use(backend)
+            out = tmp_path / f"v.{backend}"
+            Plotter(PAGE_CFG, hist_cfg=HIST_CFG).plot(
+                "v", _synthetic(), str(out), True, dict(CUSTOM_TEXTS), 10.0
+            )
+            assert out.exists() and out.stat().st_size > 0
+    finally:
+        matplotlib.use(previous)
+
+
+def test_mplhep_draws_the_cms_line_in_cms_label_fontsize(monkeypatch):
+    cfg = dict(PAGE_CFG, page_setup=dict(PAGE_CFG["page_setup"], cms_label_fontsize=20))
+    ax = _mplhep_axes(monkeypatch, cfg)
+    sizes = {t.get_text(): t.get_fontsize() for t in ax.texts}
+    # "CMS" at 1.3 x, the scope at 1 x the base size
+    assert sizes["CMS"] == pytest.approx(26.0)
+    assert sizes["Preliminary"] == pytest.approx(20.0)
+
+
+def test_an_error_in_mplhep_label_is_not_swallowed(monkeypatch):
+    import mplhep
+
+    real = mplhep.cms.label
+
+    def broken(*args, **kwargs):
+        # fails as an mplhep without text= would; a retry without it would draw a line
+        if "text" in kwargs:
+            raise TypeError("label broke")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(mplhep.cms, "label", broken)
+    with pytest.raises(TypeError, match="label broke"):
+        _mplhep_axes(monkeypatch, PAGE_CFG)
+
+
+def test_a_bold_label_is_drawn_bold_inside_its_math(monkeypatch):
+    ax = _mplhep_axes(monkeypatch, LABEL_LINES_CFG)
+    # "#mu#mu, res2b", converted to mathtext
+    (mumu,) = [t for t in ax.texts if r"\mu" in t.get_text()]
+    assert r"\mathbf" in mumu.get_text() and r"\mathrm" not in mumu.get_text()
+    assert mumu.get_fontweight() == "bold"
+
+
+def test_the_cms_line_shares_one_baseline_whatever_mplhep_offsets(monkeypatch):
+    import mplhep.label
+
+    # mplhep places the scope by the font's descent; with mplhep 1.1.3 and these fonts it is
+    # zero, so force one: the line must still share one y
+    monkeypatch.setattr(mplhep.label, "_descent_from_layout", lambda layout: 7.0)
+    fig, by_text, _ = _cms_line("Preliminary", True)
+    assert {t.get_position()[1] for t in by_text.values()} == {1.0}
+    fig.clf()
+
+
+def test_the_cms_line_keeps_half_the_scope_font_from_the_lumi():
+    from PlotKit.backends import _cms_label_overlap, _renderer
+
+    fig, by_text, _ = _cms_line("Preliminary", True)
+    ax = fig.axes[0]
+    cms, scope = by_text["CMS"], by_text["Preliminary"]
+    (lumi,) = [t for text, t in by_text.items() if "fb" in text]
+    renderer = _renderer(fig)
+    gap = renderer.points_to_pixels(0.5 * scope.get_fontsize())
+    expected = (
+        scope.get_window_extent(renderer).x1 + gap - lumi.get_window_extent(renderer).x0
+    )
+    assert _cms_label_overlap(ax, cms, scope, lumi) == pytest.approx(expected)
+    fig.clf()
+
+
+def test_the_legend_clears_the_inward_ticks(monkeypatch):
+    import matplotlib
+
+    cfg = dict(PAGE_CFG, legend={"text_size": 0.017})  # 10.2 pt, below the 12 pt ticks
+    ax = _mplhep_axes(monkeypatch, cfg)
+    legend = ax.get_legend()
+    fontsize = legend.get_texts()[0].get_fontsize()
+    tick = float(matplotlib.rcParams["ytick.major.size"])
+    assert tick > 0.5 * fontsize  # matplotlib's default padding would not clear it
+    assert legend.borderaxespad * fontsize >= tick
