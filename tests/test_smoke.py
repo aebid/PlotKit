@@ -221,8 +221,8 @@ def test_signal_scaled_to_background_integral():
 
 
 def test_cmsstyle_backend_optional(tmp_path):
-    pytest.importorskip("ROOT")
-    pytest.importorskip("cmsstyle")
+    _need("ROOT")
+    _need("cmsstyle")
     out = tmp_path / "v_root.pdf"
     Plotter(PAGE_CFG, hist_cfg=HIST_CFG, backend="cmsstyle").plot(
         "v",
@@ -674,45 +674,360 @@ def test_mplhep_draws_simulation_the_note_and_the_columns(tmp_path, monkeypatch)
     assert seen["ncol"] == 2
 
 
-def test_cmsstyle_bolds_labels_and_says_it_ignores_their_sizes():
-    from PlotKit.backends import CmsstyleBackend
-    from PlotKit.config import PlotConfig
-    from PlotKit.plotters.stacked import StackedPlotter
+def _need(module):
+    """A module the cmsstyle tests need: they skip without it, unless PLOTKIT_REQUIRE_ROOT is
+    set -- the CI job with ROOT -- where its absence fails them instead."""
+    import importlib
+    import os
 
-    plotter = StackedPlotter(PlotConfig(LABEL_LINES_CFG, hist_cfg=HIST_CFG), None)
-    spec = plotter.build_spec("v", _synthetic(), True, dict(CUSTOM_TEXTS), None)
-    with pytest.warns(UserWarning, match="label_lines text_size"):
-        labels = CmsstyleBackend._additional_info(spec)
-    assert labels == ["#bf{demo}", "#bf{#mu#mu, res2b}", "Signal Region"]
+    if os.environ.get("PLOTKIT_REQUIRE_ROOT"):
+        return importlib.import_module(module)
+    return pytest.importorskip(module)
 
 
-def test_cmsstyle_draws_simulation_the_note_and_the_columns(tmp_path, monkeypatch):
-    pytest.importorskip("ROOT")
-    CMS = pytest.importorskip("cmsstyle")
+def _latex_width(ROOT, pad, text, size, font=42):
+    """The width of a TLatex text on ``pad``, in NDC of the pad's width."""
+    import ctypes
+
+    latex = ROOT.TLatex(0, 0, text)
+    latex.SetTextFont(font)
+    latex.SetTextSize(size)
+    w, h = ctypes.c_uint(0), ctypes.c_uint(0)
+    latex.GetBoundingBox(w, h)
+    return w.value / (pad.GetWw() * pad.GetAbsWNDC())
+
+
+def _cmsstyle_plot(
+    monkeypatch, tmp_path, cfg, histograms, want_data, scale, custom=None
+):
+    """Render through the cmsstyle backend and return what the saved canvas holds: the
+    legend (labels row by row, columns, box, text size, entry widths), the frame top, the CMS
+    line's texts {text: size}, the ratio points' errors, and cmsstyle's CMS text after.
+    """
+    ROOT = _need("ROOT")
+    CMS = _need("cmsstyle")
     import cmsstyle.cmsstyle as cms_module
 
     seen = {}
 
     def keep(canvas, *args, **kwargs):
-        pads = [canvas] + [
-            p for p in canvas.GetListOfPrimitives() if p.InheritsFrom("TPad")
-        ]
-        legend = [
-            p
-            for pad in pads
-            for p in pad.GetListOfPrimitives()
-            if p.InheritsFrom("TLegend")
-        ][0]
-        seen["legend"] = [e.GetLabel() for e in legend.GetListOfPrimitives()]
-        seen["ncol"] = legend.GetNColumns()
-        seen["extra_text"] = cms_module.extraText
+        pads = [p for p in canvas.GetListOfPrimitives() if p.InheritsFrom("TPad")]
+        main = pads[0] if pads else canvas
+        primitives = list(main.GetListOfPrimitives())
+        (legend,) = [p for p in primitives if p.InheritsFrom("TLegend")]
+        labels = [e.GetLabel() for e in legend.GetListOfPrimitives()]
+        seen.update(
+            legend=labels,
+            ncol=legend.GetNColumns(),
+            box=(legend.GetX1NDC(), legend.GetX2NDC()),
+            margin=legend.GetMargin(),
+            text_size=legend.GetTextSize(),
+            widths=[
+                _latex_width(ROOT, main, label, legend.GetTextSize())
+                for label in labels
+            ],
+            right_edge=1 - main.GetRightMargin(),
+            top=main.GetUymax(),
+            texts={
+                p.GetTitle(): p.GetTextSize()
+                for p in primitives
+                if p.InheritsFrom("TLatex")
+            },
+            # {text: (left, right)} in NDC; a right-aligned text (the lumi) ends at its x
+            extents={
+                p.GetTitle(): (
+                    (p.GetX() - w, p.GetX())
+                    if p.GetTextAlign() // 10 == 3
+                    else (p.GetX(), p.GetX() + w)
+                )
+                for p in primitives
+                if p.InheritsFrom("TLatex")
+                for w in [
+                    _latex_width(
+                        ROOT, main, p.GetTitle(), p.GetTextSize(), p.GetTextFont()
+                    )
+                ]
+            },
+            cms_text=cms_module.cmsText,
+        )
+        if len(pads) > 1:
+            (ratio,) = [
+                p for p in pads[1].GetListOfPrimitives() if p.GetName() == "ratio"
+            ]
+            seen["ratio_errors"] = [
+                ratio.GetBinError(i) for i in range(1, ratio.GetNbinsX() + 1)
+            ]
 
     monkeypatch.setattr(CMS, "SaveCanvas", keep)
-    with pytest.warns(UserWarning, match="cmsstyle backend"):
-        Plotter(NOTE_CFG, hist_cfg=HIST_CFG, backend="cmsstyle").plot(
-            "v", _synthetic(), str(tmp_path / "v.pdf"), False, dict(CUSTOM_TEXTS), "bkg"
+    Plotter(cfg, hist_cfg=HIST_CFG, backend="cmsstyle").plot(
+        "v",
+        histograms,
+        str(tmp_path / "v.pdf"),
+        want_data,
+        dict(CUSTOM_TEXTS if custom is None else custom),
+        scale,
+    )
+    return seen
+
+
+def _mplhep_plot(monkeypatch, tmp_path, cfg, histograms, want_data, scale, custom=None):
+    """Render through the mplhep backend and return the legend labels in reading order,
+    the y top, the texts on the axes and the ratio points' errors."""
+    import matplotlib.figure
+
+    seen = {}
+
+    def keep(fig, *args, **kwargs):
+        ax = fig.axes[0]
+        seen.update(
+            legend=[t.get_text() for t in ax.get_legend().get_texts()],
+            top=ax.get_ylim()[1],
+            texts=[t.get_text() for t in ax.texts],
         )
-    assert seen["extra_text"] == "Simulation Preliminary"
-    assert seen["legend"][-1] == "Sig. norm."
-    assert "HH" in seen["legend"]
-    assert seen["ncol"] == 2
+        if len(fig.axes) > 1:
+            (points,) = [c for c in fig.axes[1].containers]
+            seen["ratio_errors"] = list(points.lines[2][0].get_segments())
+
+    monkeypatch.setattr(matplotlib.figure.Figure, "savefig", keep)
+    Plotter(cfg, hist_cfg=HIST_CFG).plot(
+        "v",
+        histograms,
+        str(tmp_path / "v.pdf"),
+        want_data,
+        dict(CUSTOM_TEXTS if custom is None else custom),
+        scale,
+    )
+    return seen
+
+
+def _three_backgrounds():
+    histograms = _synthetic()
+    edges = np.linspace(0, 200, 21)
+    histograms["VV"] = (
+        Hist1D(edges, 5 * np.exp(-edges[:-1] / 60), name="vv"),
+        "VV",
+        "kOrange",
+        "backgrounds",
+    )
+    return histograms
+
+
+def test_cmsstyle_labels_are_bold_and_in_their_mplhep_sizes():
+    from PlotKit.backends import _PT_PER_NDC, CmsstyleBackend
+    from PlotKit.config import PlotConfig
+    from PlotKit.plotters.stacked import StackedPlotter
+
+    plotter = StackedPlotter(PlotConfig(LABEL_LINES_CFG, hist_cfg=HIST_CFG), None)
+    spec = plotter.build_spec("v", _synthetic(), True, dict(CUSTOM_TEXTS), None)
+    labels = CmsstyleBackend._additional_info(spec)
+    assert [text for text, _, _ in labels] == [
+        "#bf{demo}",
+        "#bf{#mu#mu, res2b}",
+        "Signal Region",
+    ]
+    # each label at its configured ROOT size
+    assert [points / _PT_PER_NDC for _, points, _ in labels] == pytest.approx(
+        [0.03, 0.03, 0.025]
+    )
+
+
+def test_column_major_legend_order():
+    from PlotKit.backends import _column_major
+
+    # matplotlib: columns [a b c d] [e f g]; a TLegend is filled row by row
+    assert _column_major(list("abcdefg"), 2, "_") == list("aebfcgd_")
+    assert _column_major(list("abc"), 2, "_") == list("acb_")
+    assert _column_major(list("ab"), 3, "_") == list("ab")
+    assert _column_major(list("abc"), 1, "_") == list("abc")
+
+
+def test_root_text_translates_plotkit_labels_and_refuses_the_rest():
+    from PlotKit.backends import _root_text
+
+    assert _root_text("W #rightarrow #ell#nu + Jets") == (
+        "W #rightarrow #font[12]{l}#nu + Jets"
+    )
+    assert _root_text("X#rightarrowHH spin‐0 M_{X}=400 GeV") == (
+        "X#rightarrowHH spin-0 M_{X}=400 GeV"
+    )
+    with pytest.raises(ValueError, match=r"U\+00E9"):
+        _root_text("café")
+
+
+# HH_bbWW's plot group names (config/global.yaml, plot_process_groups)
+HH_BBWW_GROUP_NAMES = [
+    "Diboson + Triboson",
+    "Single Higgs",
+    "W #rightarrow #ell#nu + Jets",
+    "DY m_{#ell#ell}#in[10,50] GeV",
+    "DY m_{#ell#ell}>50 GeV",
+    "DY",
+    "Single top",
+    "t#bar{t} + t#bar{t}V",
+    "X#rightarrowHH spin‐0 M_{X}=400 GeV",
+]
+
+
+def test_hh_bbww_group_names_render_through_both_backends(tmp_path, monkeypatch):
+    edges = np.linspace(0, 200, 21)
+    histograms = {
+        f"p{i}": (
+            Hist1D(edges, (i + 1) * np.exp(-edges[:-1] / 80)),
+            name,
+            "kAzure-9",
+            "signals" if "X#rightarrow" in name else "backgrounds",
+        )
+        for i, name in enumerate(HH_BBWW_GROUP_NAMES)
+    }
+    mpl = _mplhep_plot(monkeypatch, tmp_path, PAGE_CFG, histograms, False, 1.0)
+    root = _cmsstyle_plot(monkeypatch, tmp_path, PAGE_CFG, histograms, False, 1.0)
+    assert len(mpl["legend"]) == len(root["legend"]) == len(HH_BBWW_GROUP_NAMES) + 1
+    labels = " ".join(root["legend"])
+    assert "#ell" not in labels and labels.isascii()
+    assert "W #rightarrow #font[12]{l}#nu + Jets" in root["legend"]
+
+
+def test_both_backends_keep_the_signals_and_the_headroom_in_the_frame(
+    tmp_path, monkeypatch
+):
+    cfg = dict(NOTE_CFG, page_setup=dict(NOTE_CFG["page_setup"], y_headroom=0.4))
+    mpl = _mplhep_plot(monkeypatch, tmp_path, cfg, _synthetic(), True, "bkg")
+    root = _cmsstyle_plot(monkeypatch, tmp_path, cfg, _synthetic(), True, "bkg")
+    from PlotKit.config import PlotConfig
+    from PlotKit.plotters.stacked import StackedPlotter
+
+    spec = StackedPlotter(PlotConfig(cfg, hist_cfg=HIST_CFG), None).build_spec(
+        "v", _synthetic(), True, dict(CUSTOM_TEXTS), "bkg"
+    )
+    peak = max(float(np.max(e.hist.values)) for e in spec.signals)
+    assert peak > float(np.max(spec.bkg_total.values)), "the signal must be the highest"
+    assert root["top"] == pytest.approx(mpl["top"])
+    assert root["top"] >= peak / (1 - 0.4) * (1 - 1e-9)
+
+
+def test_cmsstyle_legend_fits_its_columns_in_the_configured_size(tmp_path, monkeypatch):
+    root = _cmsstyle_plot(monkeypatch, tmp_path, NOTE_CFG, _synthetic(), False, "bkg")
+    assert root["text_size"] == pytest.approx(0.03)  # legend.text_size
+    assert root["ncol"] == 2
+    x1, x2 = root["box"]
+    assert x2 <= root["right_edge"]
+    column = (x2 - x1) / root["ncol"]
+    assert max(root["widths"]) <= column * (1 - root["margin"])
+
+
+def test_cmsstyle_legend_falls_back_to_one_column_when_two_do_not_fit(
+    tmp_path, monkeypatch
+):
+    cfg = dict(NOTE_CFG, legend={"text_size": 0.04, "n_columns": 2})
+    histograms = _synthetic()
+    histograms["TT"] = (
+        histograms["TT"][0],
+        "t#bar{t} " + "x" * 40,
+        "kSpring+5",
+        "backgrounds",
+    )
+    root = _cmsstyle_plot(monkeypatch, tmp_path, cfg, histograms, False, "bkg")
+    assert root["ncol"] == 1
+
+
+def test_both_backends_list_the_legend_in_the_same_order(tmp_path, monkeypatch):
+    from PlotKit.backends import _t
+
+    histograms = _three_backgrounds()
+    mpl = _mplhep_plot(monkeypatch, tmp_path, NOTE_CFG, histograms, True, "bkg")
+    root = _cmsstyle_plot(monkeypatch, tmp_path, NOTE_CFG, histograms, True, "bkg")
+    # read the TLegend's row-by-row cells column by column, as the mplhep legend reads
+    ncol, cells = root["ncol"], root["legend"]
+    reading = [label for c in range(ncol) for label in cells[c::ncol] if label]
+    assert [_t(label) for label in reading] == mpl["legend"]
+    # the top of the stack first: VV was added last
+    assert reading[:3] == ["VV", "t#bar{t}", "DY #rightarrow ll"]
+
+
+def test_both_backends_write_cms_for_a_private_scope(tmp_path, monkeypatch):
+    cfg = dict(PAGE_CFG, scope_text={"text": "Private work"})
+    for want_data in (True, False):
+        mpl = _mplhep_plot(monkeypatch, tmp_path, cfg, _synthetic(), want_data, 10.0)
+        assert "CMS" in mpl["texts"]
+        for _ in range(2):  # and the next plot keeps it
+            root = _cmsstyle_plot(
+                monkeypatch, tmp_path, cfg, _synthetic(), want_data, 10.0
+            )
+            assert "CMS" in root["texts"]
+            assert root["cms_text"] == "CMS"
+        scope = "Private work" if want_data else "Simulation Private work"
+        assert scope in root["texts"] and scope in mpl["texts"]
+
+
+def test_cmsstyle_draws_the_configured_cms_and_label_sizes(tmp_path, monkeypatch):
+    cfg = dict(
+        LABEL_LINES_CFG,
+        page_setup=dict(LABEL_LINES_CFG["page_setup"], cms_label_fontsize=20),
+    )
+    root = _cmsstyle_plot(monkeypatch, tmp_path, cfg, _synthetic(), True, 10.0)
+    texts = root["texts"]
+    # "CMS" at 1.3 x 20 pt and the scope at about 20 pt, as mplhep draws them
+    assert texts["CMS"] == pytest.approx(1.3 * 20 / 600)
+    assert texts["Preliminary"] == pytest.approx(0.76 * 1.3 * 20 / 600)
+    drawn = {t: texts[t] for t in ("#bf{demo}", "#bf{#mu#mu, res2b}", "Signal Region")}
+    assert drawn == pytest.approx(
+        {"#bf{demo}": 0.03, "#bf{#mu#mu, res2b}": 0.03, "Signal Region": 0.025}
+    )
+    # and without the option, cmsstyle's own size again
+    root = _cmsstyle_plot(
+        monkeypatch, tmp_path, LABEL_LINES_CFG, _synthetic(), True, 10.0
+    )
+    import cmsstyle.cmsstyle as cms_module
+
+    assert cms_module.cmsTextSize == pytest.approx(0.75)
+
+
+def test_both_backends_show_the_data_error_alone_in_the_ratio(tmp_path, monkeypatch):
+    edges = np.array([0.0, 1.0, 2.0])
+    histograms = {
+        "B": (
+            Hist1D(edges, [100.0, 9.0], [400.0, 36.0]),
+            "B",
+            "kAzure-9",
+            "backgrounds",
+        ),
+        "data": (Hist1D(edges, [100.0, 9.0], [100.0, 9.0]), "data", "kBlack", "data"),
+    }
+    root = _cmsstyle_plot(monkeypatch, tmp_path, PAGE_CFG, histograms, True, 1.0)
+    assert root["ratio_errors"] == pytest.approx([0.1, 1 / 3])
+    mpl = _mplhep_plot(monkeypatch, tmp_path, PAGE_CFG, histograms, True, 1.0)
+    half_lengths = [abs(seg[1][1] - seg[0][1]) / 2 for seg in mpl["ratio_errors"]]
+    assert half_lengths == pytest.approx([0.1, 1 / 3])
+
+
+def test_cmsstyle_draws_simulation_the_note_and_the_columns(tmp_path, monkeypatch):
+    root = _cmsstyle_plot(monkeypatch, tmp_path, NOTE_CFG, _synthetic(), False, "bkg")
+    assert "Simulation Preliminary" in root["texts"]
+    ncol, cells = root["ncol"], root["legend"]
+    reading = [label for c in range(ncol) for label in cells[c::ncol] if label]
+    assert reading[-1] == "Sig. norm."
+    assert "HH" in root["legend"]
+    assert root["ncol"] == 2
+
+
+def test_cmsstyle_shrinks_a_cms_line_that_would_run_into_the_lumi(
+    tmp_path, monkeypatch
+):
+    _need("cmsstyle")
+    import cmsstyle.cmsstyle as cms_module
+
+    # a line that fits keeps cmsstyle's size of "CMS"
+    _cmsstyle_plot(monkeypatch, tmp_path, PAGE_CFG, _synthetic(), True, 10.0)
+    assert cms_module.cmsTextSize == pytest.approx(0.75)
+    # a long one is shrunk until the scope ends before the lumi
+    cfg = dict(PAGE_CFG, scope_text={"text": "Private work, a long scope"})
+    root = _cmsstyle_plot(monkeypatch, tmp_path, cfg, _synthetic(), False, 10.0)
+    assert cms_module.cmsTextSize < 0.75
+    scope_end = root["extents"]["Simulation Private work, a long scope"][1]
+    (lumi_start,) = [x for t, (x, _) in root["extents"].items() if "fb" in t]
+    assert scope_end < lumi_start
+    # and one that cannot fit stops at the floor, with mplhep's warning
+    cfg = dict(PAGE_CFG, scope_text={"text": "Private work " + "x" * 60})
+    with pytest.warns(UserWarning, match="overlaps the lumi text"):
+        _cmsstyle_plot(monkeypatch, tmp_path, cfg, _synthetic(), False, 10.0)
+    assert cms_module.cmsTextSize == pytest.approx(0.6 * 0.75)
