@@ -718,7 +718,14 @@ def _latex_width(ROOT, pad, text, size, font=42):
 
 
 def _cmsstyle_plot(
-    monkeypatch, tmp_path, cfg, histograms, want_data, scale, custom=None
+    monkeypatch,
+    tmp_path,
+    cfg,
+    histograms,
+    want_data,
+    scale,
+    custom=None,
+    total_unc=None,
 ):
     """Render through the cmsstyle backend and return what the saved canvas holds: the
     legend (labels row by row, columns, box, text size, entry widths), the frame top, the CMS
@@ -786,11 +793,21 @@ def _cmsstyle_plot(
         want_data,
         dict(CUSTOM_TEXTS if custom is None else custom),
         scale,
+        total_unc=total_unc,
     )
     return seen
 
 
-def _mplhep_plot(monkeypatch, tmp_path, cfg, histograms, want_data, scale, custom=None):
+def _mplhep_plot(
+    monkeypatch,
+    tmp_path,
+    cfg,
+    histograms,
+    want_data,
+    scale,
+    custom=None,
+    total_unc=None,
+):
     """Render through the mplhep backend and return the legend labels in reading order,
     the y top, the texts on the axes and the ratio points' errors."""
     import matplotlib.figure
@@ -801,6 +818,7 @@ def _mplhep_plot(monkeypatch, tmp_path, cfg, histograms, want_data, scale, custo
         ax = fig.axes[0]
         seen.update(
             legend=[t.get_text() for t in ax.get_legend().get_texts()],
+            ncol=ax.get_legend()._ncols,
             top=ax.get_ylim()[1],
             texts=[t.get_text() for t in ax.texts],
         )
@@ -816,6 +834,7 @@ def _mplhep_plot(monkeypatch, tmp_path, cfg, histograms, want_data, scale, custo
         want_data,
         dict(CUSTOM_TEXTS if custom is None else custom),
         scale,
+        total_unc=total_unc,
     )
     return seen
 
@@ -959,7 +978,7 @@ def test_both_backends_list_the_legend_in_the_same_order(tmp_path, monkeypatch):
     # read the TLegend's row-by-row cells column by column, as the mplhep legend reads
     ncol, cells = root["ncol"], root["legend"]
     reading = [label for c in range(ncol) for label in cells[c::ncol] if label]
-    assert [_t(label) for label in reading] == mpl["legend"]
+    assert [_t(label) for label in reading] == [t for t in mpl["legend"] if t]
     # the top of the stack first: VV was added last
     assert reading[:3] == ["VV", "t#bar{t}", "DY #rightarrow ll"]
 
@@ -1160,3 +1179,76 @@ def test_the_legend_clears_the_inward_ticks(monkeypatch):
     tick = float(matplotlib.rcParams["ytick.major.size"])
     assert tick > 0.5 * fontsize  # matplotlib's default padding would not clear it
     assert legend.borderaxespad * fontsize >= tick
+
+
+def test_keep_together_moves_a_split_group_to_the_next_column():
+    from PlotKit.backends import _keep_together
+
+    # 8 entries in 2 columns: [0 1 2 3] [4 5 6 7]; the bands at 3 and 4 are split
+    out = _keep_together(list("abcBBdef"), 3, 2, 2, "_")
+    columns = np.array_split(np.arange(len(out)), 2)
+    (column,) = [c for c in columns if out.index("B") in c]
+    assert out.index("B") + 1 in column
+    assert [e for e in out if e != "_"] == list("abcBBdef")
+    # already together, one column, or a single band: unchanged
+    assert _keep_together(list("aBBcde"), 1, 2, 2, "_") == list("aBBcde")
+    assert _keep_together(list("abcBBdef"), 3, 2, 1, "_") == list("abcBBdef")
+    assert _keep_together(list("abcBdef"), 3, 1, 2, "_") == list("abcBdef")
+
+
+def test_both_backends_keep_the_two_bands_in_one_legend_column(tmp_path, monkeypatch):
+    from PlotKit.backends import _root_text, _t
+    from PlotKit.config import PlotConfig
+    from PlotKit.plotters.stacked import StackedPlotter
+
+    histograms = _three_backgrounds()
+    total_unc = _total_unc(histograms)
+    spec = StackedPlotter(PlotConfig(NOTE_CFG, hist_cfg=HIST_CFG), None).build_spec(
+        "v", histograms, True, dict(CUSTOM_TEXTS), "bkg", total_unc
+    )
+    labels = [spec.unc_band.label, spec.stat_band.label]
+
+    def columns(cells, ncol, row_major):
+        if row_major:  # a TLegend's cells, filled row by row
+            return [[c for c in cells[i::ncol] if c] for i in range(ncol)]
+        return [[c for c in col if c] for col in np.array_split(cells, ncol)]
+
+    mpl = _mplhep_plot(
+        monkeypatch, tmp_path, NOTE_CFG, histograms, True, "bkg", total_unc=total_unc
+    )
+    for cells, ncol, row_major in [(mpl["legend"], mpl["ncol"], False)] + (
+        [
+            (root["legend"], root["ncol"], True)
+            for root in [
+                _cmsstyle_plot(
+                    monkeypatch,
+                    tmp_path,
+                    NOTE_CFG,
+                    histograms,
+                    True,
+                    "bkg",
+                    total_unc=total_unc,
+                )
+            ]
+        ]
+        if _root_available()
+        else []
+    ):
+        assert ncol == 2
+        bands = [_root_text(b) if row_major else _t(b) for b in labels]
+        assert set(bands) <= set(cells), cells
+        (column,) = [c for c in columns(cells, ncol, row_major) if bands[0] in c]
+        assert bands[1] in column, columns(cells, ncol, row_major)
+
+
+def _root_available():
+    import os
+
+    if os.environ.get("PLOTKIT_REQUIRE_ROOT"):
+        return True
+    try:
+        import ROOT  # noqa: F401
+        import cmsstyle  # noqa: F401
+    except Exception:
+        return False
+    return True

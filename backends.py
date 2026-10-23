@@ -75,6 +75,25 @@ def _column_major(entries, ncol, blank):
     ]
 
 
+def _keep_together(entries, first, count, ncol, blank):
+    """``entries`` with blank cells (``blank``) inserted before ``entries[first]`` so that
+    the ``count`` entries from there -- the two uncertainty bands -- share one legend column
+    when the columns are filled as matplotlib fills them (``np.array_split``). Unchanged when
+    they already do, or when they cannot: one column, one entry, or more than a column holds.
+    """
+    if ncol < 2 or count < 2:
+        return list(entries)
+    out = list(entries)
+    for _ in range(len(entries) + ncol):
+        columns = np.array_split(np.arange(len(out)), ncol)
+        column_of = {int(i): c for c, cells in enumerate(columns) for i in cells}
+        if column_of[first] == column_of[first + count - 1]:
+            return out
+        out.insert(first, blank)
+        first += 1
+    return list(entries)
+
+
 # A ROOT NDC text size times this is the point size the mplhep backend draws it at
 # (plotters/stacked.py's mapping of the configurations' text_size), so the cmsstyle backend
 # divides by it to draw a configured size in ROOT.
@@ -494,12 +513,22 @@ class MplhepBackend(StyleBackend):
             )
             # a line per label, further apart for a label larger than 16 pt
             y -= 0.06 * max(1.0, size / 16.0) if style else 0.06
+        from matplotlib.lines import Line2D
+
         handles, labels = ax.get_legend_handles_labels()
         if spec.legend_note:
-            from matplotlib.lines import Line2D
-
             handles.append(Line2D([], [], linestyle="none"))
             labels.append(_t(spec.legend_note))
+        bands = [_t(band.label) for _, band in _bands(spec)]
+        if len(bands) > 1 and bands[0] in labels:
+            pairs = _keep_together(
+                list(zip(handles, labels)),
+                labels.index(bands[0]),
+                len(bands),
+                spec.legend_ncol,
+                (Line2D([], [], linestyle="none"), ""),
+            )
+            handles, labels = [h for h, _ in pairs], [label for _, label in pairs]
         ax.legend(
             handles,
             labels,
@@ -724,7 +753,7 @@ class CmsstyleBackend(StyleBackend):
             y -= 0.06 * max(1.0, points / 16.0) if styled else 0.06
 
     @staticmethod
-    def _legend(ROOT, CMS, pad, spec, entries):
+    def _legend(ROOT, CMS, pad, spec, entries, bands=(0, 0)):
         """The legend in the top right of ``pad``, sized to its entries: in the configured
         text size (legend.text_size; cmsstyle's 0.04 when unset), in ``legend_ncol`` columns
         as wide as the widest label, and filled column by column as the mplhep backend does.
@@ -755,6 +784,8 @@ class CmsstyleBackend(StyleBackend):
         ncol = max(1, spec.legend_ncol or 1)
         if ncol > 1 and x2 - ncol * column < left:
             ncol = 1
+        # the uncertainty bands (``bands``: first entry, count) in one column, as in mplhep
+        entries = _keep_together(entries, *bands, ncol, (ROOT.nullptr, "", ""))
         rows = math.ceil(len(entries) / ncol)
         pad.cd()
         leg = CMS.cmsLeg(
@@ -877,7 +908,12 @@ class CmsstyleBackend(StyleBackend):
         # the legend and the CMS line last, so that they are drawn over the histograms
         keep.append(
             self._legend(
-                ROOT, CMS, main, spec, _legend_entries_mplhep_order(backgrounds, others)
+                ROOT,
+                CMS,
+                main,
+                spec,
+                _legend_entries_mplhep_order(backgrounds, others),
+                bands=(len(backgrounds), len(_bands(spec))),
             )
         )
         self._cms_line(ROOT, CMS, main, spec)
